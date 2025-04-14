@@ -131,12 +131,13 @@ class WebOSClient:
     PROMPTED = 1
     REGISTERED = 2
 
-    def __init__(self, host: str, secure: bool = False):
+    def __init__(self, host: str, secure: bool = False, client_key: Optional[str] = None):
         """Initialize the WebOS client.
         
         Args:
             host: Hostname or IP address of the TV
             secure: Use secure WebSocket connection (wss://)
+            client_key: Optional client key for authentication
         """
         if secure:
             self.ws_url = f"wss://{host}:3001/"
@@ -148,6 +149,7 @@ class WebOSClient:
         self.connection: Optional[WebSocketClientProtocol] = None
         self.task: Optional[asyncio.Task] = None
         self._connecting = False
+        self.client_key = client_key
 
     @staticmethod
     def discover_sync(secure=False):
@@ -212,14 +214,28 @@ class WebOSClient:
 
     async def _process_message(self, obj):
         """Process a received message object."""
+        # Log received message for debugging
+        logger.debug("Received message: %s", obj)
+        
         # Handle responses to requests
         msg_id = obj.get("id")
         if msg_id and msg_id in self.waiters:
             callback, created_time = self.waiters[msg_id]
-            if callable(callback):
-                callback(obj)
+            
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(obj)
+                else:
+                    callback(obj)
+            except Exception as ex:
+                logger.exception("Error calling callback for message %s: %s", msg_id, ex)
+                
+            # Only remove waiters for non-subscription responses 
+            # Subscriptions are removed explicitly by unsubscribe
+            if msg_id not in self.subscribers:
+                self.waiters.pop(msg_id, None)
         
-        # Clear old waiters
+        # Clear old waiters periodically
         await self._clear_old_waiters()
 
     async def _clear_old_waiters(self, delta=60):
@@ -243,7 +259,7 @@ class WebOSClient:
         registration is complete.
         
         Args:
-            store: A dict-like object that stores the client key
+            store: A dict-like object that will receive the client key
             timeout: Timeout in seconds for registration
         
         Yields:
@@ -253,40 +269,96 @@ class WebOSClient:
         Raises:
             Exception: If registration fails
         """
-        if "client_key" in store:
-            reg_payload = dict(REGISTRATION_PAYLOAD)
-            reg_payload["client-key"] = store["client_key"]
-        else:
-            reg_payload = REGISTRATION_PAYLOAD
-
+        # Prepare registration payload
+        reg_payload = dict(REGISTRATION_PAYLOAD)
+        
+        # Use client key if available
+        if self.client_key:
+            reg_payload["client-key"] = self.client_key
+        
+        # Ensure we're connected
         if not self.connection:
             await self.connect()
             
-        queue = await self.send_message('register', None, reg_payload, get_queue=True)
+        # Create events to track registration status
+        prompted_event = asyncio.Event()
+        registered_event = asyncio.Event()
         
-        try:
-            deadline = asyncio.get_event_loop().time() + timeout
-            while True:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    raise asyncio.TimeoutError("Registration timed out")
+        # Variable to store registration results
+        registration_result = {"client_key": None, "error": None, "already_registered": False}
+        
+        # Define callback to handle registration responses
+        async def registration_callback(response):
+            logger.debug("Registration response: %s", response)
+            
+            if response.get("payload", {}).get("pairingType") == "PROMPT":
+                logger.info("Please accept the connection on the TV!")
+                prompted_event.set()
+                
+            elif response.get("type") == "registered":
+                if "client-key" in response.get("payload", {}):
+                    registration_result["client_key"] = response["payload"]["client-key"]
+                    logger.info("Registration successful! Client key received")
                     
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    raise Exception("Timeout during registration")
-
-                if item.get("payload", {}).get("pairingType") == "PROMPT":
-                    yield WebOSClient.PROMPTED
-                elif item["type"] == "registered":
-                    store["client_key"] = item["payload"]["client-key"]
-                    yield WebOSClient.REGISTERED
-                    break
-                else:
-                    raise Exception(f"Failed to register: {item}")
-        except Exception as ex:
-            logger.exception("Registration failed: %s", ex)
-            raise
+                    # If prompted_event is not set, we're already registered (no prompt needed)
+                    if not prompted_event.is_set():
+                        logger.info("Already registered (using existing client key)")
+                        registration_result["already_registered"] = True
+                        prompted_event.set()  # Set this so we don't hang waiting for prompt
+                        
+                    registered_event.set()
+                    
+            elif response.get("type") == "error":
+                registration_result["error"] = response.get("error", "Unknown error")
+                logger.error("Registration error: %s", registration_result["error"])
+                prompted_event.set()  # Make sure we don't hang
+                registered_event.set()
+        
+        # Send registration request through send_message
+        await self.send_message("register", None, reg_payload, 
+                               callback=registration_callback)
+        
+        # Wait for prompt
+        try:
+            await asyncio.wait_for(prompted_event.wait(), timeout=timeout)
+            
+            # If we got an error, raise it now
+            if registration_result["error"]:
+                raise Exception(f"Registration failed: {registration_result['error']}")
+                
+            # If already registered, we still yield PROMPTED to maintain the API contract
+            yield self.PROMPTED
+            
+            # If already registered, then we don't need to wait for the registered event
+            if registration_result["already_registered"] and registration_result["client_key"]:
+                client_key = registration_result["client_key"]
+                store["client_key"] = client_key
+                self.client_key = client_key
+                yield self.REGISTERED
+                return
+                
+        except asyncio.TimeoutError:
+            raise Exception("Timeout waiting for TV to prompt for pairing")
+            
+        # Wait for registration to complete
+        try:
+            await asyncio.wait_for(registered_event.wait(), timeout=timeout)
+            
+            if registration_result["error"]:
+                raise Exception(f"Registration failed: {registration_result['error']}")
+                
+            if registration_result["client_key"]:
+                client_key = registration_result["client_key"]
+                # Store the client key in the provided store dict
+                store["client_key"] = client_key
+                # Also update the instance's client_key
+                self.client_key = client_key
+                yield self.REGISTERED
+            else:
+                raise Exception("Registration completed but no client key received")
+                
+        except asyncio.TimeoutError:
+            raise Exception("Timeout waiting for registration completion")
 
     async def send_message(self, request_type, uri, payload, unique_id=None,
                     get_queue=False, callback=None, cur_time=time.time):
@@ -310,27 +382,34 @@ class WebOSClient:
         if unique_id is None:
             unique_id = str(uuid4())
 
-        wait_queue = None
-        if get_queue:
-            wait_queue = asyncio.Queue()
-            
-            # Create a callback that puts the response in the queue
-            async def queue_callback(response):
-                await wait_queue.put(response)
-            callback = queue_callback
-
-        if callback is not None:
-            self.waiters[unique_id] = (callback, cur_time())
-
+        # Prepare the message object
         obj = {"type": request_type, "id": unique_id}
         if uri is not None:
             obj["uri"] = uri
         if payload is not None:
             obj["payload"] = payload
+            
+        # Handle queue case
+        wait_queue = None
+        if get_queue:
+            wait_queue = asyncio.Queue()
+            
+            async def queue_callback(response):
+                await wait_queue.put(response)
+            
+            # Use the queue callback instead of the provided one
+            callback = queue_callback
 
+        # Register callback if provided
+        if callback is not None:
+            self.waiters[unique_id] = (callback, cur_time())
+
+        # Send the message
         message = json.dumps(obj)
+        logger.debug("Sending message: %s", message)
         await self.connection.send(message)
 
+        # Return the queue if requested
         if get_queue:
             return wait_queue
 
@@ -346,12 +425,23 @@ class WebOSClient:
         Returns:
             The subscription ID
         """
+        # Create wrapper to handle subscription callbacks
         async def wrapper(obj):
-            await callback(obj.get("payload"))
+            if "payload" in obj:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(obj["payload"])
+                else:
+                    callback(obj["payload"])
 
+        # Add to subscribers list first
         self.subscribers[unique_id] = uri
-        await self.send_message('subscribe', uri, payload, unique_id=unique_id,
-                          callback=wrapper, cur_time=lambda: None)
+        
+        # Then register the callback
+        self.waiters[unique_id] = (wrapper, None)
+        
+        # Send the subscription request
+        await self.send_message('subscribe', uri, payload, unique_id=unique_id)
+        
         return unique_id
 
     async def unsubscribe(self, unique_id):
@@ -363,15 +453,21 @@ class WebOSClient:
         Raises:
             ValueError: If the subscription is not found
         """
-        uri = self.subscribers.pop(unique_id, None)
-
-        if not uri:
+        # Check if subscription exists
+        if unique_id not in self.subscribers:
             raise ValueError(f"Subscription not found: {unique_id}")
-
+            
+        # Get URI from subscribers list
+        uri = self.subscribers.pop(unique_id)
+        
+        # Remove associated waiter
         if unique_id in self.waiters:
             self.waiters.pop(unique_id)
-
-        await self.send_message('unsubscribe', uri, payload=None)
+            
+        # Send unsubscribe request
+        await self.send_message('unsubscribe', uri, None)
+        
+        logger.debug("Unsubscribed from %s with ID %s", uri, unique_id)
 
     async def __aenter__(self):
         """Enter async context manager."""

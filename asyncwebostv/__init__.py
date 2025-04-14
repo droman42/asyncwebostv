@@ -2,7 +2,7 @@
 
 __version__ = "0.1.0"
 
-from .connection import WebOSClient, WebOSWebSocketClient
+from .connection import WebOSClient
 from .controls import (
     MediaControl,
     TvControl,
