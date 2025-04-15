@@ -30,7 +30,7 @@ dev = [
 ]
 
 [tool.setuptools]
-package-dir = { "" = "asyncewbostv" }
+package-dir = { "" = "asyncwebostv" }
 
 [tool.setuptools.packages.find]
 where = ["asyncwebostv"]

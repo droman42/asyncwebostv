@@ -6,7 +6,7 @@ setup(
     author="AsyncWebOSTV Team",
     author_email="your-email@example.com",
     description="Asynchronous client library for LG WebOS TVs",
-    long_description=open("async_migration_spec.md").read(),
+    long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/asyncwebostv",
     packages=find_packages(),
