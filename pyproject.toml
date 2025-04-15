@@ -29,6 +29,12 @@ dev = [
     "mypy>=0.900",
 ]
 
+[tool.setuptools]
+package-dir = { "" = "asyncewbostv" }
+
+[tool.setuptools.packages.find]
+where = ["asyncwebostv"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
