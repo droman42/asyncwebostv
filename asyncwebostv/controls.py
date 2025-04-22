@@ -5,6 +5,7 @@ import asyncio
 import json
 from typing import Any, Dict, List, Optional, Callable, Union, Tuple
 from uuid import uuid4
+import websockets
 
 from asyncwebostv.model import Application, InputSource, AudioOutputSource
 
@@ -616,12 +617,10 @@ class InputControl(WebOSControlBase):
 
     async def connect_input(self):
         """Connect to the input socket."""
-        from websockets import connect
-        
         uri = await self.request("ssap://com.webos.service.networkinput/getPointerInputSocket",
                           {}, block=True)
         
-        self.ws_client = await connect(uri.get("payload").get("socketPath"))
+        self.ws_client = await websockets.connect(uri.get("payload").get("socketPath"))
         return self.ws_client
 
     async def disconnect_input(self):
