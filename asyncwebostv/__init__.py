@@ -3,6 +3,12 @@
 __version__ = "0.1.0"
 
 from .connection import WebOSClient
+from .secure_connection import (
+    SecureWebOSClient,
+    extract_certificate,
+    verify_certificate,
+)
+from .client import WebOSTV, SecureWebOSTV
 from .controls import (
     MediaControl,
     TvControl,

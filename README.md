@@ -7,6 +7,7 @@ An asynchronous Python library for controlling LG WebOS TVs. This is an async po
 - Asynchronous API for controlling LG WebOS TVs
 - WebSocket-based communication
 - Support for all major TV controls (media, system, input, etc.)
+- **Secure SSL/TLS connections with certificate handling**
 - Modern Python async/await syntax
 - Type hints for better IDE support
 - Comprehensive test coverage
@@ -56,6 +57,90 @@ async def main():
 asyncio.run(main())
 ```
 
+## Secure Connections
+
+AsyncWebOSTV supports secure SSL/TLS connections to WebOS TVs. The library provides two classes for secure connections:
+
+### SecureWebOSClient
+
+Low-level secure client with enhanced SSL certificate handling:
+
+```python
+import asyncio
+from asyncwebostv import SecureWebOSClient, extract_certificate
+
+async def main():
+    # Extract and save certificate from TV
+    cert_file = "tv_cert.pem"
+    await extract_certificate("192.168.1.100", 3001, cert_file)
+    
+    # Create secure client with certificate verification
+    client = SecureWebOSClient(
+        host="192.168.1.100",
+        port=3001,
+        secure=True,
+        cert_file=cert_file,
+        verify_ssl=True,
+        client_key="your-client-key"  # Optional
+    )
+    
+    # Connect and use as normal
+    await client.connect()
+    
+    # Close connection
+    await client.close()
+
+asyncio.run(main())
+```
+
+### SecureWebOSTV
+
+High-level secure client with SSL certificate handling:
+
+```python
+import asyncio
+from asyncwebostv import SecureWebOSTV
+
+async def main():
+    # Create secure TV client
+    tv = SecureWebOSTV(
+        host="192.168.1.100",
+        port=3001,
+        cert_file="tv_cert.pem",  # Optional
+        verify_ssl=True           # Set to False to skip verification
+    )
+    
+    # Extract and save certificate
+    # await tv.get_certificate("tv_cert.pem")
+    
+    # Connect and register if needed
+    await tv.connect()
+    if not tv.client_key:
+        client_key = await tv.register()
+    
+    # Now use the client property to access lower-level API
+    client = tv.client
+    
+    # Close connection
+    await tv.close()
+
+asyncio.run(main())
+```
+
+### Certificate Utilities
+
+The library includes utility functions for working with TV certificates:
+
+```python
+from asyncwebostv import extract_certificate, verify_certificate
+
+# Extract certificate from TV
+cert_pem = await extract_certificate("192.168.1.100", 3001, "tv_cert.pem")
+
+# Verify if a saved certificate matches the current one on the TV
+matches = await verify_certificate("tv_cert.pem", "192.168.1.100", 3001)
+```
+
 ## Client Key Management
 
 Unlike some other libraries, AsyncWebOSTV does not save client keys to disk by default. 
@@ -85,6 +170,16 @@ This approach gives you more control over how client keys are stored and managed
 ## Documentation
 
 For detailed documentation, please visit our [documentation page](https://github.com/yourusername/asyncwebostv/wiki).
+
+## Examples
+
+Check out the `examples` directory for more usage examples:
+
+- `simple_example.py` - Basic TV control
+- `secure_client_example.py` - Using SecureWebOSClient for secure connections
+- `secure_tv_example.py` - Using SecureWebOSTV high-level API with security
+- `subscription_example.py` - Working with event subscriptions
+- `discover_tv.py` - Discovering TVs on the network
 
 ## Development
 

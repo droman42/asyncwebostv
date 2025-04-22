@@ -112,6 +112,8 @@ venv.bak/
 .vscode/
 *.swp
 *.swo
+mypy.ini
+pyrightconfig.json
 
 # OS generated files
 .DS_Store
@@ -121,3 +123,6 @@ venv.bak/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# internal stuff
+scripts/
