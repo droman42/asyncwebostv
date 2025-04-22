@@ -5,7 +5,6 @@ import socket
 import time
 from typing import Optional, Dict, Any, Union
 import websockets
-from websockets.client import WebSocketClientProtocol
 
 from .connection import WebOSClient
 
@@ -52,6 +51,7 @@ class SecureWebOSClient(WebOSClient):
         self.verify_ssl = verify_ssl
         self.ssl_options = ssl_options or {}
         self.port = port
+        self.host = host  # Store host explicitly
         
     def _create_ssl_context(self) -> ssl.SSLContext:
         """Create an SSL context based on the provided parameters.
@@ -111,12 +111,12 @@ class SecureWebOSClient(WebOSClient):
                     
                     if self.ws_url.startswith("wss://"):
                         ssl_context = self._create_ssl_context()
-                        self.connection = await websockets.connect(
+                        self.connection = await websockets.client.connect(
                             self.ws_url, 
                             ssl=ssl_context
                         )
                     else:
-                        self.connection = await websockets.connect(self.ws_url)
+                        self.connection = await websockets.client.connect(self.ws_url)
                         
                     # Start the message handling task
                     self.task = asyncio.create_task(self._handle_messages())

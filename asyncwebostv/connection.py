@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional, Tuple, Callable, List, Union
 import logging
 
 import websockets
-from websockets.client import WebSocketClientProtocol
+from websockets.sync.client import connect  # Import connect function directly
 
 from asyncwebostv.discovery import discover, discover_sync
 
@@ -146,39 +146,40 @@ class WebOSClient:
 
         self.waiters: Dict[str, Tuple[Callable, Optional[float]]] = {}
         self.subscribers: Dict[str, str] = {}
-        self.connection: Optional[WebSocketClientProtocol] = None
+        self.connection: Optional[Any] = None
         self.task: Optional[asyncio.Task] = None
         self._connecting = False
         self.client_key = client_key
 
     @staticmethod
-    def discover_sync(secure=False):
+    def discover_sync(secure=False) -> List["WebOSClient"]:
         """Synchronous discovery of WebOS TVs on the network."""
         res = discover_sync("urn:schemas-upnp-org:device:MediaRenderer:1",
                        keyword="LG", hosts=True, retries=3)
         return [WebOSClient(x, secure) for x in res]
 
     @staticmethod
-    async def discover(secure=False):
+    async def discover(secure=False) -> List["WebOSClient"]:
         """Asynchronously discover WebOS TVs on the network."""
         res = await discover("urn:schemas-upnp-org:device:MediaRenderer:1",
                        keyword="LG", hosts=True, retries=3)
         return [WebOSClient(x, secure) for x in res]
 
-    async def connect(self):
+    async def connect(self) -> None:
         """Connect to the WebOS TV."""
         if self._connecting:
             return
             
         self._connecting = True
         try:
-            self.connection = await websockets.connect(self.ws_url)
+            # Use websockets.connect directly
+            self.connection = await websockets.client.connect(self.ws_url)
             # Start the message handling task
             self.task = asyncio.create_task(self._handle_messages())
         finally:
             self._connecting = False
 
-    async def close(self):
+    async def close(self) -> None:
         """Close the connection."""
         if self.connection:
             await self.connection.close()
@@ -360,8 +361,16 @@ class WebOSClient:
         except asyncio.TimeoutError:
             raise Exception("Timeout waiting for registration completion")
 
-    async def send_message(self, request_type, uri, payload, unique_id=None,
-                    get_queue=False, callback=None, cur_time=time.time):
+    async def send_message(
+        self, 
+        request_type: str, 
+        uri: Optional[str], 
+        payload: Optional[Dict[str, Any]] = None, 
+        unique_id: Optional[str] = None,
+        callback: Optional[Callable] = None,
+        get_queue: bool = False, 
+        cur_time: Callable[[], float] = time.time
+    ) -> Optional[asyncio.Queue]:
         """Send a message to the TV.
         
         Args:
@@ -383,7 +392,7 @@ class WebOSClient:
             unique_id = str(uuid4())
 
         # Prepare the message object
-        obj = {"type": request_type, "id": unique_id}
+        obj: Dict[str, Any] = {"type": request_type, "id": unique_id}
         if uri is not None:
             obj["uri"] = uri
         if payload is not None:

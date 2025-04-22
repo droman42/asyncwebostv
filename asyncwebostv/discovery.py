@@ -1,29 +1,45 @@
 import socket
 import asyncio
 import aiohttp
-from typing import Set, Optional, Union
+from typing import Set, Optional, Union, Any
 from urllib.parse import urlparse
 
 
 def read_location(resp, keyword=None):
-    if not isinstance(resp, str):
-        resp = resp.decode('utf-8')
+    """
+    Extract location information from SSDP response.
+    
+    Args:
+        resp: Response data as bytes
+        keyword: Optional keyword to filter by
+        
+    Returns:
+        Location URL or None if not found
+    """
+    if isinstance(resp, bytes):
+        resp = resp.decode('utf-8', errors='ignore')
+        
+    for line in resp.split('\r\n'):
+        if line.lower().startswith('location:'):
+            location = line[9:].strip()
+            if keyword:
+                if isinstance(keyword, str):
+                    keyword = keyword.encode()
+                return location if keyword in location.encode() else None
+            return location
+    return None
 
-    for line in resp.splitlines():
-        line = line.lower()
-        header = "location: "
-        if line.startswith(header):
-            return line[len(header):]
 
-
-async def validate_location(location: str, keyword: Optional[Union[str, bytes]], timeout: float = 5) -> bool:
+async def validate_location(location: str, keyword: Optional[Union[str, bytes]], timeout: Optional[float] = 5) -> bool:
     """Asynchronously validate that a location is valid and contains the keyword."""
     if isinstance(keyword, str):
         keyword = keyword.encode()
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(location, timeout=timeout) as response:
+            # Create a proper timeout object
+            timeout_obj = aiohttp.ClientTimeout(total=timeout) if timeout is not None else None
+            async with session.get(location, timeout=timeout_obj) as response:
                 content = await response.read()
                 if not keyword:
                     return True

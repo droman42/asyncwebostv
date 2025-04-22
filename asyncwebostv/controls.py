@@ -80,7 +80,7 @@ def standard_validation(payload):
 class WebOSControlBase:
     """Base class for WebOS TV controls."""
     
-    COMMANDS = {}
+    COMMANDS: Dict[str, Dict[str, Any]] = {}
 
     def __init__(self, client):
         """Initialize the control base.
@@ -620,7 +620,11 @@ class InputControl(WebOSControlBase):
         uri = await self.request("ssap://com.webos.service.networkinput/getPointerInputSocket",
                           {}, block=True)
         
-        self.ws_client = await websockets.connect(uri.get("payload").get("socketPath"))
+        socket_path = uri.get("payload", {}).get("socketPath")
+        if not socket_path:
+            raise ValueError("Failed to get pointer input socket path")
+            
+        self.ws_client = await websockets.client.connect(socket_path)
         return self.ws_client
 
     async def disconnect_input(self):

@@ -1,22 +1,38 @@
-"""AsyncWebOSTV - Asynchronous client library for LG WebOS TVs."""
+"""Asynchronous client for LG webOS TVs."""
 
-__version__ = "0.1.0"
-
-from .connection import WebOSClient
-from .secure_connection import (
-    SecureWebOSClient,
-    extract_certificate,
-    verify_certificate,
-)
-from .client import WebOSTV, SecureWebOSTV
-from .controls import (
+from asyncwebostv.connection import WebOSClient
+from asyncwebostv.controls import (
     MediaControl,
-    TvControl,
     SystemControl,
     ApplicationControl,
+    TvControl,
     InputControl,
-    SourceControl,
+    SourceControl
 )
+# Import the SecureWebOSClient
+try:
+    from asyncwebostv.secure_connection import SecureWebOSClient, extract_certificate, verify_certificate
+except ImportError:
+    # SecureWebOSClient may not be available in older versions
+    pass
+
+# Export version
+__version__ = "0.1.1"
+
+__all__ = [
+    "WebOSClient",
+    "MediaControl",
+    "SystemControl",
+    "ApplicationControl",
+    "TvControl",
+    "InputControl",
+    "SourceControl",
+    "SecureWebOSClient",
+    "extract_certificate",
+    "verify_certificate",
+]
+
+from .client import WebOSTV, SecureWebOSTV
 from .model import Application, InputSource, AudioOutputSource
 from .discovery import discover
 
