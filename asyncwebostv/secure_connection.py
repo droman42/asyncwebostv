@@ -113,10 +113,16 @@ class SecureWebOSClient(WebOSClient):
                         ssl_context = self._create_ssl_context()
                         self.connection = await websockets.client.connect(
                             self.ws_url, 
-                            ssl=ssl_context
+                            ssl=ssl_context,
+                            extra_headers=[], # Empty list to avoid default headers including Origin
+                            origin=None  # Explicitly set origin to None
                         )
                     else:
-                        self.connection = await websockets.client.connect(self.ws_url)
+                        self.connection = await websockets.client.connect(
+                            self.ws_url,
+                            extra_headers=[], # Empty list to avoid default headers including Origin
+                            origin=None  # Explicitly set origin to None
+                        )
                         
                     # Start the message handling task
                     self.task = asyncio.create_task(self._handle_messages())

@@ -172,8 +172,12 @@ class WebOSClient:
             
         self._connecting = True
         try:
-            # Use websockets.connect directly
-            self.connection = await websockets.client.connect(self.ws_url)
+            # Use websockets.connect directly with custom headers that exclude Origin
+            self.connection = await websockets.client.connect(
+                self.ws_url,
+                extra_headers=[], # Empty list to avoid default headers including Origin
+                origin=None  # Explicitly set origin to None
+            )
             # Start the message handling task
             self.task = asyncio.create_task(self._handle_messages())
         finally:
@@ -203,6 +207,8 @@ class WebOSClient:
             async for message in self.connection:
                 try:
                     obj = json.loads(message)
+                    # Enhanced logging to capture all incoming messages
+                    logger.debug("Received message: %s", obj)
                     await self._process_message(obj)
                 except json.JSONDecodeError:
                     logger.warning("Received invalid JSON: %s", message)
@@ -215,29 +221,35 @@ class WebOSClient:
 
     async def _process_message(self, obj):
         """Process a received message object."""
-        # Log received message for debugging
-        logger.debug("Received message: %s", obj)
-        
-        # Handle responses to requests
-        msg_id = obj.get("id")
-        if msg_id and msg_id in self.waiters:
-            callback, created_time = self.waiters[msg_id]
-            
-            try:
-                if asyncio.iscoroutinefunction(callback):
-                    await callback(obj)
-                else:
-                    callback(obj)
-            except Exception as ex:
-                logger.exception("Error calling callback for message %s: %s", msg_id, ex)
+        try:
+            # Handle responses to requests
+            msg_id = obj.get("id")
+            if msg_id and msg_id in self.waiters:
+                callback, created_time = self.waiters[msg_id]
                 
-            # Only remove waiters for non-subscription responses 
-            # Subscriptions are removed explicitly by unsubscribe
-            if msg_id not in self.subscribers:
-                self.waiters.pop(msg_id, None)
-        
-        # Clear old waiters periodically
-        await self._clear_old_waiters()
+                try:
+                    if asyncio.iscoroutinefunction(callback):
+                        await callback(obj)
+                    else:
+                        callback(obj)
+                except Exception as ex:
+                    logger.exception("Error calling callback for message %s: %s", msg_id, ex)
+                    
+                # Only remove waiters for non-subscription responses and non-registration messages
+                # Subscriptions are removed explicitly by unsubscribe
+                # Registration waiters need to stay until the entire registration process completes
+                if msg_id not in self.subscribers:
+                    self.waiters.pop(msg_id, None)
+            
+            # Special handling for registration messages if no waiter was found
+            # This is a fallback in case the waiter was somehow removed
+            elif obj.get("type") == "registered":
+                logger.warning("Received registration message with no matching waiter: %s", obj)
+                
+            # Clear old waiters periodically
+            await self._clear_old_waiters()
+        except Exception as ex:
+            logger.exception("Unexpected error in _process_message: %s", ex)
 
     async def _clear_old_waiters(self, delta=60):
         """Clear waiters that are older than delta seconds."""
@@ -268,98 +280,54 @@ class WebOSClient:
             REGISTERED when registration is complete
         
         Raises:
-            Exception: If registration fails
+            Exception: If registration fails or times out
         """
-        # Prepare registration payload
+        # Make a copy of the registration payload
         reg_payload = dict(REGISTRATION_PAYLOAD)
         
-        # Use client key if available
-        if self.client_key:
+        # Use client key if it's in the store or provided to the client constructor
+        if "client_key" in store:
+            reg_payload["client-key"] = store["client_key"]
+        elif self.client_key:
             reg_payload["client-key"] = self.client_key
-        
+            
         # Ensure we're connected
         if not self.connection:
             await self.connect()
-            
-        # Create events to track registration status
-        prompted_event = asyncio.Event()
-        registered_event = asyncio.Event()
         
-        # Variable to store registration results
-        registration_result = {"client_key": None, "error": None, "already_registered": False}
+        # Create a queue to collect all registration-related messages
+        queue = await self.send_message('register', None, reg_payload, get_queue=True)
         
-        # Define callback to handle registration responses
-        async def registration_callback(response):
-            logger.debug("Registration response: %s", response)
-            
-            if response.get("payload", {}).get("pairingType") == "PROMPT":
-                logger.info("Please accept the connection on the TV!")
-                prompted_event.set()
-                
-            elif response.get("type") == "registered":
-                if "client-key" in response.get("payload", {}):
-                    registration_result["client_key"] = response["payload"]["client-key"]
-                    logger.info("Registration successful! Client key received")
-                    
-                    # If prompted_event is not set, we're already registered (no prompt needed)
-                    if not prompted_event.is_set():
-                        logger.info("Already registered (using existing client key)")
-                        registration_result["already_registered"] = True
-                        prompted_event.set()  # Set this so we don't hang waiting for prompt
-                        
-                    registered_event.set()
-                    
-            elif response.get("type") == "error":
-                registration_result["error"] = response.get("error", "Unknown error")
-                logger.error("Registration error: %s", registration_result["error"])
-                prompted_event.set()  # Make sure we don't hang
-                registered_event.set()
-        
-        # Send registration request through send_message
-        await self.send_message("register", None, reg_payload, 
-                               callback=registration_callback)
-        
-        # Wait for prompt
         try:
-            await asyncio.wait_for(prompted_event.wait(), timeout=timeout)
-            
-            # If we got an error, raise it now
-            if registration_result["error"]:
-                raise Exception(f"Registration failed: {registration_result['error']}")
+            # Wait for prompt message
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    raise Exception("Timeout during registration")
                 
-            # If already registered, we still yield PROMPTED to maintain the API contract
-            yield self.PROMPTED
-            
-            # If already registered, then we don't need to wait for the registered event
-            if registration_result["already_registered"] and registration_result["client_key"]:
-                client_key = registration_result["client_key"]
-                store["client_key"] = client_key
-                self.client_key = client_key
-                yield self.REGISTERED
-                return
+                logger.debug("Registration message received: %s", item)
                 
-        except asyncio.TimeoutError:
-            raise Exception("Timeout waiting for TV to prompt for pairing")
-            
-        # Wait for registration to complete
-        try:
-            await asyncio.wait_for(registered_event.wait(), timeout=timeout)
-            
-            if registration_result["error"]:
-                raise Exception(f"Registration failed: {registration_result['error']}")
+                if item.get("payload", {}).get("pairingType") == "PROMPT":
+                    logger.info("Please accept the connection on the TV!")
+                    yield self.PROMPTED
+                elif item.get("type") == "registered":
+                    # Extract client key and save to store
+                    client_key = item.get("payload", {}).get("client-key")
+                    if client_key:
+                        store["client_key"] = client_key
+                        self.client_key = client_key
+                        logger.info("Registration successful! Client key received")
+                        yield self.REGISTERED
+                        break
+                    else:
+                        raise Exception("Registration failed: No client key received")
+                elif item.get("type") == "error":
+                    raise Exception(f"Registration failed: {item.get('error', 'Unknown error')}")
                 
-            if registration_result["client_key"]:
-                client_key = registration_result["client_key"]
-                # Store the client key in the provided store dict
-                store["client_key"] = client_key
-                # Also update the instance's client_key
-                self.client_key = client_key
-                yield self.REGISTERED
-            else:
-                raise Exception("Registration completed but no client key received")
-                
-        except asyncio.TimeoutError:
-            raise Exception("Timeout waiting for registration completion")
+        except Exception as ex:
+            logger.exception("Error during registration: %s", ex)
+            raise
 
     async def send_message(
         self, 
@@ -411,7 +379,15 @@ class WebOSClient:
 
         # Register callback if provided
         if callback is not None:
-            self.waiters[unique_id] = (callback, cur_time())
+            # For registration requests, mark the callback with None as created_time
+            # This prevents it from being removed by the cleaner and ensures it stays 
+            # available for both the initial response and the "registered" message
+            if request_type == "register":
+                self.waiters[unique_id] = (callback, None)
+                # Also add to subscribers to prevent removal after first response
+                self.subscribers[unique_id] = "register"
+            else:
+                self.waiters[unique_id] = (callback, cur_time())
 
         # Send the message
         message = json.dumps(obj)

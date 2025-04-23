@@ -19,6 +19,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Enable debug logging for the connection module
+websockets_logger = logging.getLogger('asyncwebostv.connection')
+websockets_logger.setLevel(logging.DEBUG)
+
 async def setup_client(ip_address, secure=False, client_key=None, force_register=False):
     """Set up a client connection to the TV, without persistent storage.
     
@@ -31,8 +35,8 @@ async def setup_client(ip_address, secure=False, client_key=None, force_register
     Returns:
         Tuple of (client, client_key)
     """
-    # Create client instance with the provided client key
-    client = WebOSClient(ip_address, secure=secure, client_key=client_key)
+    # Create client instance
+    client = WebOSClient(ip_address, secure=secure)
     
     # Connect to the TV
     logger.info("Connecting to %s", client.ws_url)
@@ -44,8 +48,13 @@ async def setup_client(ip_address, secure=False, client_key=None, force_register
         try:
             # Store for collecting client key
             store = {}
+            if client_key and not force_register:
+                store["client_key"] = client_key
             
-            async for status in client.register(store):
+            # Set a timeout for registration (in seconds)
+            registration_timeout = 120  # 2 minutes
+            
+            async for status in client.register(store, timeout=registration_timeout):
                 if status == WebOSClient.PROMPTED:
                     logger.info("Please accept the connection request on your TV")
                 elif status == WebOSClient.REGISTERED:
@@ -53,7 +62,10 @@ async def setup_client(ip_address, secure=False, client_key=None, force_register
             
             # Extract the new client key
             client_key = store.get("client_key")
-            logger.info("Obtained new client key: %s", client_key)
+            if client_key:
+                logger.info("Obtained new client key: %s", client_key)
+            else:
+                logger.error("Registration completed but no client key was obtained")
                 
         except Exception as ex:
             logger.error("Registration failed: %s", ex)
@@ -71,12 +83,13 @@ async def run_test(ip_address, secure=False, client_key=None, force_register=Fal
         client_key: Optional client key for authentication
         force_register: Force registration even if client key is provided
     """
-    client, client_key = await setup_client(ip_address, secure, client_key, force_register)
-    if not client:
-        logger.error("Failed to set up client")
-        return
-    
     try:
+        logger.info("Setting up client...")
+        client, client_key = await setup_client(ip_address, secure, client_key, force_register)
+        if not client:
+            logger.error("Failed to set up client")
+            return
+        
         # Display the client key that should be saved externally if needed
         logger.info("Active client key for future use: %s", client_key)
         
@@ -85,11 +98,13 @@ async def run_test(ip_address, secure=False, client_key=None, force_register=Fal
         media = MediaControl(client)
         
         # Get system info
+        logger.info("Getting system info...")
         info = await system.info()
         logger.info("System Info:\n%s", pformat(info))
         
         # Get current volume
         try:
+            logger.info("Getting current volume...")
             volume = await media.get_volume()
             logger.info("Current Volume: %s", volume)
         except Exception as ex:
@@ -97,6 +112,7 @@ async def run_test(ip_address, secure=False, client_key=None, force_register=Fal
         
         # Show a notification on the TV
         try:
+            logger.info("Sending notification to TV...")
             await system.notify("AsyncWebOSTV Test", "Connection successful!")
             logger.info("Displayed notification on TV")
         except Exception as ex:
@@ -106,11 +122,12 @@ async def run_test(ip_address, secure=False, client_key=None, force_register=Fal
         await asyncio.sleep(3)
         
     except Exception as ex:
-        logger.error("Error during test: %s", ex)
+        logger.exception("Error during test: %s", ex)
     finally:
         # Close the connection
-        await client.close()
-        logger.info("Connection closed")
+        if 'client' in locals() and client:
+            await client.close()
+            logger.info("Connection closed")
 
 async def main():
     """Main function."""
@@ -119,7 +136,13 @@ async def main():
     parser.add_argument('--secure', action='store_true', help='Use secure connection')
     parser.add_argument('--client-key', help='Client key for authentication (optional)')
     parser.add_argument('--force-register', action='store_true', help='Force registration even if a client key is provided')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
+    
+    # Set debug logging if requested
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        websockets_logger.setLevel(logging.DEBUG)
     
     logger.info("Starting test with %s connection", "secure" if args.secure else "non-secure")
     logger.info("Client key provided: %s", args.client_key if args.client_key else "None")
