@@ -278,6 +278,10 @@ class MediaControl(WebOSControlBase):
             "payload": {"mute": arguments(0)},
             "validation": standard_validation,
         },
+        "get_audio_status": {
+            "uri": "ssap://audio/getStatus",
+            "validation": standard_validation,
+        },
         "play": {
             "uri": "ssap://media.controls/play",
             "validation": standard_validation,
@@ -513,6 +517,10 @@ class SystemControl(WebOSControlBase):
             "uri": "ssap://com.webos.applicationManager/listLaunchPoints",
             "validation": standard_validation,
         },
+        "get_settings": {
+            "uri": "ssap://settings/getSystemSettings",
+            "validation": standard_validation,
+        },
     }
 
     async def power_off_with_monitoring(self, timeout: float = 10.0) -> Dict[str, Any]:
@@ -656,7 +664,7 @@ class ApplicationControl(WebOSControlBase):
             "payload": {"appId": arguments(0)},
             "validation": standard_validation,
         },
-        "get_current_app": {
+        "get_current": {
             "uri": "ssap://com.webos.applicationManager/getForegroundAppInfo",
             "validation": standard_validation,
             "return": lambda payload: Application(payload),
@@ -720,7 +728,7 @@ class ApplicationControl(WebOSControlBase):
             
             # Try to get foreground app info to confirm the app is in foreground
             try:
-                foreground_info = await self.get_current_app()
+                foreground_info = await self.get_current()
                 if foreground_info and foreground_info.id == app_id:
                     launch_status["status"] = "foreground"
                     launch_status["appInfo"] = foreground_info
@@ -750,7 +758,7 @@ class ApplicationControl(WebOSControlBase):
                 # No additional app status messages received
                 # Try one more time to get foreground app info
                 try:
-                    foreground_info = await self.get_current_app()
+                    foreground_info = await self.get_current()
                     if foreground_info and foreground_info.id == app_id:
                         launch_status["status"] = "foreground"
                         launch_status["appInfo"] = foreground_info
@@ -1100,5 +1108,9 @@ class SourceControl(WebOSControlBase):
             "args": [dict],
             "validation": standard_validation,
             "payload": arguments(0)
+        },
+        "get_source_info": {
+            "uri": "ssap://tv/getCurrentExternalInput",
+            "validation": standard_validation
         }
     }

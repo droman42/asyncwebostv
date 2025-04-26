@@ -149,11 +149,12 @@ class SecureWebOSClient(WebOSClient):
         finally:
             self._connecting = False
             
-    async def register(self, store):
+    async def register(self, store, timeout=60):
         """Register the client with the TV with enhanced error handling.
         
         Args:
             store: A dict-like object that will receive the client key
+            timeout: Timeout in seconds for registration
             
         Yields:
             PROMPTED when the TV shows the prompt
@@ -163,7 +164,7 @@ class SecureWebOSClient(WebOSClient):
             Exception: If registration fails due to SSL or other issues
         """
         try:
-            async for status in super().register(store):
+            async for status in super().register(store, timeout=timeout):
                 yield status
         except ssl.SSLError as e:
             logger.error(f"SSL error during registration: {e}")

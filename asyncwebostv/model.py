@@ -19,7 +19,8 @@ class Application:
 
     def __repr__(self) -> str:
         """Return the string representation of the application."""
-        return f"<Application '{self['title']}'>"
+        title = self.data.get('title', self.data.get('appId', 'Unknown App'))
+        return f"<Application '{title}'>"
 
 
 class InputSource:
