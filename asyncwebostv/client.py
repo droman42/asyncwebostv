@@ -72,8 +72,10 @@ class WebOSTV:
     async def connect(self) -> None:
         """Connect to the TV and register to ensure all permissions are granted."""
         # First establish the connection
+        logger.debug("Connecting to TV...")
         await self.client.connect()
-        
+        logger.debug("Connected to TV...")
+
         # Always register with the TV, even with an existing client key
         # This ensures all permissions are granted for the current session
         store: Dict[str, Any] = {}

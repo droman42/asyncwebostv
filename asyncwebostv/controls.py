@@ -1028,13 +1028,34 @@ class InputControl(WebOSControlBase):
                                 pass
                             self._pointer_websocket = None
                         
+                        # Check if we have a secure client with SSL context
+                        ssl_context = None
+                        
+                        # Access _create_ssl_context if available (from SecureWebOSClient)
+                        if hasattr(self.client, '_create_ssl_context'):
+                            try:
+                                ssl_context = self.client._create_ssl_context()
+                                logger.debug("Using SSL context from client for pointer socket")
+                            except Exception as e:
+                                logger.warning(f"Failed to get SSL context from client: {e}")
+                        
                         # Create new connection with websockets 15.0.1 compatible parameters
                         # Using empty dict for extra_headers to avoid Origin header
                         logger.debug(f"Connecting to pointer socket (attempt {self._connection_attempts})")
+                        
+                        # Connection parameters
+                        connect_kwargs = {
+                            'extra_headers': {},  # Empty dict to avoid default headers including Origin
+                            'open_timeout': 10,   # Add timeout for connection
+                        }
+                        
+                        # Add SSL context if available
+                        if ssl_context and self.pointer_socket_uri.startswith('wss://'):
+                            connect_kwargs['ssl'] = ssl_context
+                        
                         self._pointer_websocket = await websockets.client.connect(
                             self.pointer_socket_uri,
-                            extra_headers={},  # Empty dict to avoid default headers including Origin
-                            open_timeout=10,   # Add timeout for connection
+                            **connect_kwargs
                         )
                         
                         # Send a registration command exactly like PyWebOSTV does

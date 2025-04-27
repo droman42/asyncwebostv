@@ -6,6 +6,7 @@ This test verifies that:
 1. The InputControl class properly establishes a WebSocket connection
 2. Button commands can be sent successfully
 3. The connection is properly closed when the client is shut down
+4. Secure connections work with certificates
 """
 
 import asyncio
@@ -13,9 +14,10 @@ import argparse
 import logging
 import sys
 from typing import Dict, Any, Optional, Tuple
+import ssl
 
 from asyncwebostv.connection import WebOSClient
-from asyncwebostv.client import WebOSTV
+from asyncwebostv.client import WebOSTV, SecureWebOSTV
 from asyncwebostv.controls import InputControl, ApplicationControl
 
 # Configure logging
@@ -206,6 +208,102 @@ async def test_with_webostv(host: str, client_key: Optional[str] = None) -> bool
             pass
         return False
 
+async def test_with_secure_webostv(
+    host: str, 
+    client_key: Optional[str] = None,
+    cert_file: Optional[str] = None,
+    verify_ssl: bool = True,
+    ssl_options: Optional[Dict[str, Any]] = None
+) -> bool:
+    """Test with the high-level SecureWebOSTV API.
+    
+    Args:
+        host: TV hostname or IP address
+        client_key: Optional client key
+        cert_file: Path to the TV's certificate file
+        verify_ssl: Whether to verify the SSL certificate
+        ssl_options: Additional SSL options
+        
+    Returns:
+        True if test was successful, False otherwise
+    """
+    # Create SSL context if needed
+    ssl_context = None
+    if not verify_ssl and not cert_file:
+        logger.info("Creating SSL context with verification disabled")
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+    
+    # Create the secure TV client
+    tv = SecureWebOSTV(
+        host=host, 
+        client_key=client_key,
+        cert_file=cert_file,
+        ssl_context=ssl_context,
+        verify_ssl=verify_ssl,
+        ssl_options=ssl_options
+    )
+    
+    try:
+        # Connect to the TV (this handles registration automatically)
+        logger.info(f"Connecting securely to TV at {host}...")
+        await tv.connect()
+        logger.info("Secure connection established successfully!")
+        
+        # Test basic button commands
+        logger.info("Testing HOME button...")
+        await tv.input.home()
+        logger.info("HOME button command successful")
+        
+        await asyncio.sleep(2)
+        
+        logger.info("Testing UP button...")
+        await tv.input.up()
+        logger.info("UP button command successful")
+        
+        await asyncio.sleep(1)
+        
+        logger.info("Testing DOWN button...")
+        await tv.input.down()
+        logger.info("DOWN button command successful")
+        
+        # Close connection properly
+        logger.info("Closing secure connection...")
+        await tv.close()
+        logger.info("Secure connection closed")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Secure test failed: {e}")
+        try:
+            await tv.close()
+        except:
+            pass
+        return False
+
+async def extract_and_save_certificate(host: str, save_path: str) -> bool:
+    """Extract and save the TV's SSL certificate.
+    
+    Args:
+        host: TV hostname or IP address
+        save_path: Path to save the certificate to
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    from asyncwebostv.secure_connection import extract_certificate
+    
+    try:
+        logger.info(f"Extracting certificate from {host}...")
+        cert = await extract_certificate(host, output_file=save_path)
+        logger.info(f"Certificate saved to {save_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to extract certificate: {e}")
+        return False
+
 async def main():
     """Main entry point for the test."""
     parser = argparse.ArgumentParser(description='Test InputControl WebSocket connection')
@@ -213,6 +311,12 @@ async def main():
     parser.add_argument('--client-key', help='Client key for authentication')
     parser.add_argument('--use-low-level', action='store_true', 
                        help='Use low-level WebOSClient API directly')
+    parser.add_argument('--use-secure', action='store_true',
+                       help='Use SecureWebOSTV with SSL/TLS')
+    parser.add_argument('--cert-file', help='Path to TV certificate file for secure connection')
+    parser.add_argument('--no-verify-ssl', action='store_true', 
+                       help='Disable SSL certificate verification')
+    parser.add_argument('--extract-cert', help='Extract and save TV certificate to specified path')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
     
@@ -221,11 +325,28 @@ async def main():
         logging.getLogger().setLevel(logging.DEBUG)
         websockets_logger.setLevel(logging.DEBUG)
     
-    if args.use_low_level:
+    # Extract certificate if requested
+    if args.extract_cert:
+        success = await extract_and_save_certificate(args.host, args.extract_cert)
+        return 0 if success else 1
+    
+    # Main testing
+    if args.use_secure:
+        # Test with secure connection
+        logger.info("Testing with secure connection")
+        ssl_options = None
+        success = await test_with_secure_webostv(
+            host=args.host,
+            client_key=args.client_key,
+            cert_file=args.cert_file,
+            verify_ssl=not args.no_verify_ssl,
+            ssl_options=ssl_options
+        )
+    elif args.use_low_level:
         # Test with low-level API
         success = await test_button_commands(args.host, args.client_key)
     else:
-        # Test with high-level API
+        # Test with high-level API (unsecured)
         success = await test_with_webostv(args.host, args.client_key)
     
     return 0 if success else 1

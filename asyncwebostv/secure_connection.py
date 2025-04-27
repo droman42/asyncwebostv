@@ -76,6 +76,10 @@ class SecureWebOSClient(WebOSClient):
             logger.debug(f"Using certificate file: {self.cert_file}")
             context.load_verify_locations(self.cert_file)
             
+            # LG TV certificates are often self-signed and may lack proper hostnames
+            # Disable hostname checking but still verify certificate
+            context.check_hostname = False
+            
         # Apply additional SSL options
         for key, value in self.ssl_options.items():
             if hasattr(context, key):
