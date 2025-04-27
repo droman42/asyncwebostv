@@ -1,8 +1,16 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, AsyncIterator
 import logging
 
 from .connection import WebOSClient
 from .secure_connection import SecureWebOSClient
+from .controls import (
+    MediaControl,
+    SystemControl,
+    ApplicationControl,
+    TvControl,
+    InputControl,
+    SourceControl
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +34,16 @@ class WebOSTV:
         self._inputs = None
         self._channels = None
         self._channel = None
+        
+        # Control objects will be initialized later
+        self.media: Optional[MediaControl] = None
+        self.system: Optional[SystemControl] = None
+        self.application: Optional[ApplicationControl] = None
+        self.tv: Optional[TvControl] = None
+        self.input: Optional[InputControl] = None
+        self.source: Optional[SourceControl] = None
 
-    async def register(self, timeout=60) -> str:
+    async def register(self, timeout: int = 60) -> str:
         """Register the client with the TV.
         
         Args:
@@ -54,12 +70,72 @@ class WebOSTV:
         return self.client_key
 
     async def connect(self) -> None:
-        """Connect to the TV and optionally register if needed."""
+        """Connect to the TV and register to ensure all permissions are granted."""
+        # First establish the connection
         await self.client.connect()
         
+        # Always register with the TV, even with an existing client key
+        # This ensures all permissions are granted for the current session
+        store: Dict[str, Any] = {}
+        if self.client_key:
+            store["client_key"] = self.client_key
+            
+        try:
+            logger.info("Registering with TV using client key...")
+            async for status in self.client.register(store):
+                if status == WebOSClient.PROMPTED:
+                    logger.info("Please accept the connection on the TV")
+                elif status == WebOSClient.REGISTERED:
+                    # Update client_key in case it changed
+                    self.client_key = store.get("client_key")
+                    logger.info("Registration successful!")
+        except Exception as e:
+            logger.error(f"Registration error: {e}")
+            await self.client.close()
+            raise
+        
+        # Initialize control objects
+        self.media = MediaControl(self.client)
+        self.system = SystemControl(self.client)
+        self.application = ApplicationControl(self.client)
+        self.tv = TvControl(self.client)
+        self.input = InputControl(self.client)
+        self.source = SourceControl(self.client)
+        
+        # Initialize the input connection explicitly
+        # This matches PyWebOSTV's behavior of connecting input during initialization
+        try:
+            logger.info("Establishing connection to pointer input socket...")
+            await self.input.connect_input()
+            logger.info("Pointer input socket connected successfully")
+        except Exception as e:
+            # Don't fail the entire connection if input socket fails
+            # Some operations might still work without the input socket
+            logger.warning(f"Failed to connect to pointer input socket: {e}")
+            logger.warning("Some remote control functions may not work correctly")
+            logger.warning("Direct input service will be used as fallback for button commands")
+
     async def close(self) -> None:
-        """Close the connection to the TV."""
-        await self.client.close()
+        """Close the connection to the TV and clean up resources."""
+        # Close the input control's websocket connection if it exists
+        if self.input:
+            try:
+                await self.input.close()
+            except Exception as e:
+                logger.error(f"Error closing input control: {e}")
+        
+        # Close the main WebOS client connection
+        if self.client:
+            await self.client.close()
+
+    async def __aenter__(self) -> 'WebOSTV':
+        """Enter async context manager."""
+        await self.connect()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit async context manager."""
+        await self.close()
 
 
 class SecureWebOSTV(WebOSTV):
@@ -106,7 +182,15 @@ class SecureWebOSTV(WebOSTV):
         self._channels = None
         self._channel = None
         
-    async def get_certificate(self, save_path=None):
+        # Initialize control interfaces as None
+        self.media: Optional[MediaControl] = None
+        self.system: Optional[SystemControl] = None
+        self.application: Optional[ApplicationControl] = None
+        self.tv: Optional[TvControl] = None
+        self.input: Optional[InputControl] = None
+        self.source: Optional[SourceControl] = None
+        
+    async def get_certificate(self, save_path: Optional[str] = None) -> str:
         """Get the TV's SSL certificate.
         
         Args:

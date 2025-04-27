@@ -3,12 +3,16 @@
 import base64
 import asyncio
 import json
+import logging
 from typing import Any, Dict, List, Optional, Callable, Union, Tuple
 from uuid import uuid4
 import websockets
 
 from asyncwebostv.model import Application, InputSource, AudioOutputSource
 from asyncwebostv.connection import WebOSClient
+
+# Configure logger
+logger = logging.getLogger(__name__)
 
 ARGS_NONE = ()
 
@@ -838,8 +842,12 @@ class InputControl(WebOSControlBase):
             client: WebOSClient instance
         """
         super(InputControl, self).__init__(client)
-        self.pointer_socket = None
         self.pointer_socket_uri = None
+        self._pointer_websocket = None
+        self._pointer_lock = asyncio.Lock()
+        self._is_connected = False
+        self._connection_attempts = 0
+        self._max_attempts = 3
         
         # Create methods for each button command
         for cmd_name, button in self.BUTTON_COMMANDS.items():
@@ -861,8 +869,31 @@ class InputControl(WebOSControlBase):
         """
         async def button_method():
             """Send a button press command to the TV."""
-            return await self.request("ssap://com.webos.service.networkinput/buttonPress", 
-                                    {"name": button_name})
+            # First try using the pointer socket method (preferred)
+            try:
+                if not self._is_connected:
+                    await self.connect_input()
+                
+                if self._is_connected:
+                    return await self._send_pointer_command({
+                        "type": "button",
+                        "name": button_name
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to send button via pointer socket: {e}, trying direct service")
+                
+            # Fallback to direct service request
+            try:
+                response = await self.request(
+                    "ssap://com.webos.service.networkinput/sendInputButton",
+                    {"buttonName": button_name},
+                    block=True
+                )
+                return response
+            except Exception as e:
+                logger.error(f"All methods to send button {button_name} failed: {e}")
+                raise
+                
         return button_method
         
     def _create_click_method(self):
@@ -879,14 +910,13 @@ class InputControl(WebOSControlBase):
                 y: Y-coordinate (optional)
                 drag: Whether to drag (optional)
             """
-            await self._ensure_pointer_socket()
+            if not self._is_connected:
+                await self.connect_input()
             
-            payload = {}
+            payload = {"type": "click"}
             if x is not None and y is not None:
                 payload["x"] = x
                 payload["y"] = y
-            
-            payload["click"] = True
             
             if drag:
                 payload["drag"] = True
@@ -908,9 +938,11 @@ class InputControl(WebOSControlBase):
                 y: Y-coordinate
                 drag: Whether to drag (optional)
             """
-            await self._ensure_pointer_socket()
+            if not self._is_connected:
+                await self.connect_input()
             
             payload = {
+                "type": "move",
                 "x": x,
                 "y": y
             }
@@ -935,9 +967,11 @@ class InputControl(WebOSControlBase):
                 y: Y-coordinate
                 wheel_direction: Direction to scroll
             """
-            await self._ensure_pointer_socket()
+            if not self._is_connected:
+                await self.connect_input()
             
             payload = {
+                "type": "scroll",
                 "x": x,
                 "y": y,
                 "wheelDirection": wheel_direction
@@ -945,24 +979,89 @@ class InputControl(WebOSControlBase):
                 
             return await self._send_pointer_command(payload)
         return scroll_method
+    
+    async def connect_input(self):
+        """Connect to the TV's input socket.
         
-    async def _ensure_pointer_socket(self):
-        """Ensure that we have a pointer socket.
+        This method explicitly establishes a connection to the pointer input
+        socket, using the same approach as PyWebOSTV. It should be called before
+        sending input commands for reliable behavior.
         
         Raises:
-            IOError: If we couldn't get a pointer socket
+            IOError: If connection to the input socket fails
         """
-        if self.pointer_socket_uri is None:
+        async with self._pointer_lock:
+            # Reset connection state
+            self._is_connected = False
+            self._connection_attempts = 0
+            
             # Get the pointer socket URI
-            response = await self.request("ssap://com.webos.service.networkinput/getPointerInputSocket", 
-                                         {}, block=True)
-            
-            socket_path = response.get("payload", {}).get("socketPath")
-            if not socket_path:
-                raise IOError("Failed to get pointer input socket")
+            try:
+                logger.debug("Getting pointer input socket URI")
+                response = await self.request(
+                    "ssap://com.webos.service.networkinput/getPointerInputSocket", 
+                    {}, 
+                    block=True
+                )
                 
-            self.pointer_socket_uri = socket_path
-            
+                logger.debug(f"Pointer socket response: {response}")
+                
+                if not response or not response.get("payload"):
+                    raise IOError("No response or empty payload from getPointerInputSocket request")
+                    
+                socket_path = response.get("payload", {}).get("socketPath")
+                if not socket_path:
+                    raise IOError("No socketPath in response payload")
+                    
+                self.pointer_socket_uri = socket_path
+                logger.debug(f"Got pointer socket URI: {socket_path}")
+                
+                # Establish WebSocket connection
+                while self._connection_attempts < self._max_attempts:
+                    self._connection_attempts += 1
+                    try:
+                        # Close any existing connection
+                        if self._pointer_websocket:
+                            try:
+                                await self._pointer_websocket.close()
+                            except Exception:
+                                pass
+                            self._pointer_websocket = None
+                        
+                        # Create new connection with websockets 15.0.1 compatible parameters
+                        # Using empty dict for extra_headers to avoid Origin header
+                        logger.debug(f"Connecting to pointer socket (attempt {self._connection_attempts})")
+                        self._pointer_websocket = await websockets.client.connect(
+                            self.pointer_socket_uri,
+                            extra_headers={},  # Empty dict to avoid default headers including Origin
+                            open_timeout=10,   # Add timeout for connection
+                        )
+                        
+                        # Send a registration command exactly like PyWebOSTV does
+                        # This is a critical step that was missing in the original implementation
+                        logger.debug("Registering with pointer socket")
+                        register_payload = "register\n\n"
+                        await self._pointer_websocket.send(register_payload)
+                        
+                        # If we get here without exception, connection is successful
+                        self._is_connected = True
+                        logger.info("Successfully connected to pointer input socket")
+                        break
+                        
+                    except Exception as e:
+                        logger.warning(f"Attempt {self._connection_attempts} to connect to pointer socket failed: {e}")
+                        if self._connection_attempts >= self._max_attempts:
+                            raise IOError(f"Failed to connect to pointer socket after {self._max_attempts} attempts: {e}")
+                        await asyncio.sleep(1)  # Brief delay before retry
+                
+                if not self._is_connected:
+                    raise IOError("Failed to establish pointer socket connection")
+                    
+            except Exception as e:
+                logger.error(f"Failed to connect to pointer input: {e}")
+                self._is_connected = False
+                raise IOError(f"Failed to connect to pointer input: {e}")
+    
     async def _send_pointer_command(self, payload):
         """Send a command to the pointer socket.
         
@@ -975,17 +1074,47 @@ class InputControl(WebOSControlBase):
         Raises:
             IOError: If we couldn't send the command
         """
-        if not self.pointer_socket_uri:
-            raise IOError("No pointer socket URI available")
+        if not self._is_connected or not self._pointer_websocket:
+            await self.connect_input()
             
         try:
-            # Connect to the pointer socket for just this command
-            # In a high-volume scenario, we might want to keep the connection open
-            async with websockets.connect(self.pointer_socket_uri) as websocket:
-                await websocket.send(json.dumps(payload))
-                return {"returnValue": True}
+            # Format payload exactly like PyWebOSTV does
+            formatted_payload = ""
+            for key, value in payload.items():
+                formatted_payload += f"{key}:{value}\n"
+            formatted_payload += "\n"
+            
+            logger.debug(f"Sending pointer command: {formatted_payload}")
+            await self._pointer_websocket.send(formatted_payload)
+            return {"returnValue": True}
         except Exception as e:
-            raise IOError(f"Failed to send pointer command: {str(e)}")
+            # If sending fails, mark connection as broken and propagate error
+            self._is_connected = False
+            raise IOError(f"Failed to send pointer command: {e}")
+    
+    async def disconnect_input(self):
+        """Disconnect from the pointer input socket.
+        
+        This method explicitly closes the pointer input connection, mirroring
+        PyWebOSTV's behavior. Call this when you're done with input commands.
+        """
+        async with self._pointer_lock:
+            if self._pointer_websocket:
+                try:
+                    await self._pointer_websocket.close()
+                    logger.debug("Disconnected from pointer input socket")
+                except Exception as e:
+                    logger.warning(f"Error disconnecting from pointer socket: {e}")
+                finally:
+                    self._pointer_websocket = None
+                    self._is_connected = False
+    
+    async def close(self):
+        """Close the pointer websocket connection if it exists.
+        
+        Call this method when shutting down to ensure all resources are released.
+        """
+        await self.disconnect_input()
     
     async def list_inputs(self) -> Dict[str, Any]:
         """Get a list of available input sources.
@@ -1020,73 +1149,6 @@ class InputControl(WebOSControlBase):
                                          {"inputId": input_id}, get_queue=True)
         response = await queue.get()
         return response.get('payload', {})
-        
-    async def set_input_with_monitoring(self, input_id: str, timeout: float = 10.0) -> Dict[str, Any]:
-        """Switch to a different input source and monitor until the switch is complete.
-        
-        This method uses our persistent callback pattern to monitor the input switch process
-        and returns once the input is fully switched or the timeout is reached.
-        
-        Args:
-            input_id: ID of the input source to switch to
-            timeout: Timeout in seconds to wait for the input switch to complete
-            
-        Returns:
-            Response with input switch status and details
-        """
-        # Send the input switch request with a persistent queue
-        queue = await self.client.send_message('request', 'ssap://tv/switchInput', 
-                                         {"inputId": input_id}, get_queue=True)
-        
-        # Monitor the input switch process
-        start_time = asyncio.get_event_loop().time()
-        switch_status = {"status": "unknown", "returnValue": False}
-        
-        try:
-            # Get the initial response
-            initial_response = await asyncio.wait_for(queue.get(), timeout=5.0)
-            switch_status = initial_response.get('payload', {})
-            
-            # If the switch failed immediately, return early
-            if not switch_status.get("returnValue", False):
-                return switch_status
-                
-            # Set status to switching based on initial response
-            switch_status["status"] = "switching"
-            
-            # Wait for any additional messages that might indicate input status
-            try:
-                while asyncio.get_event_loop().time() - start_time < timeout:
-                    response = await asyncio.wait_for(queue.get(), timeout=1.0)
-                    response_payload = response.get('payload', {})
-                    
-                    # Check for input change notification
-                    if 'inputId' in response_payload and response_payload.get('inputId') == input_id:
-                        switch_status["status"] = "switched"
-                        switch_status["inputDetails"] = response_payload
-                        return switch_status
-                    
-                    # Short delay to prevent tight loop
-                    await asyncio.sleep(0.1)
-                    
-            except asyncio.TimeoutError:
-                # No additional input messages received
-                # Try to get current input to confirm the switch
-                try:
-                    current_input = await self.get_input()
-                    if current_input.get("inputId") == input_id:
-                        switch_status["status"] = "switched"
-                        switch_status["inputDetails"] = current_input
-                        return switch_status
-                except Exception:
-                    pass
-                
-        except asyncio.TimeoutError:
-            # Timeout waiting for the initial response
-            switch_status["status"] = "timeout"
-            switch_status["error"] = "Timeout waiting for input switch response"
-            
-        return switch_status
 
 
 class SourceControl(WebOSControlBase):

@@ -12,6 +12,13 @@ An asynchronous Python library for controlling LG WebOS TVs. This is an async po
 - Type hints for better IDE support
 - Comprehensive test coverage
 
+## Requirements
+
+- Python 3.7+
+- websockets 15.0.1+
+- aiohttp 3.8.0+
+- zeroconf 0.36.0+
+
 ## Installation
 
 ```bash
@@ -28,10 +35,10 @@ from asyncwebostv.controls import MediaControl, SystemControl
 async def main():
     # Create a WebOS client
     client = WebOSClient("192.168.1.100")  # Replace with your TV's IP
-    
+
     # Connect to TV
     await client.connect()
-    
+
     # Register with the TV (if needed)
     store = {}  # Dictionary to receive the client key
     async for status in client.register(store):
@@ -39,18 +46,18 @@ async def main():
             print("Please accept the connection on your TV")
         elif status == WebOSClient.REGISTERED:
             print(f"Registration successful, client key: {store.get('client_key')}")
-    
+
     # Use the client key for future sessions to avoid re-pairing
     # client_key = store.get("client_key")
-    
+
     # Create control interfaces
     media = MediaControl(client)
     system = SystemControl(client)
-    
+
     # Control TV
     await media.volume_up()
     await system.notify("Hello from AsyncWebOSTV!")
-    
+
     # Close connection
     await client.close()
 
@@ -73,7 +80,7 @@ async def main():
     # Extract and save certificate from TV
     cert_file = "tv_cert.pem"
     await extract_certificate("192.168.1.100", 3001, cert_file)
-    
+
     # Create secure client with certificate verification
     client = SecureWebOSClient(
         host="192.168.1.100",
@@ -83,10 +90,10 @@ async def main():
         verify_ssl=True,
         client_key="your-client-key"  # Optional
     )
-    
+
     # Connect and use as normal
     await client.connect()
-    
+
     # Close connection
     await client.close()
 
@@ -109,18 +116,18 @@ async def main():
         cert_file="tv_cert.pem",  # Optional
         verify_ssl=True           # Set to False to skip verification
     )
-    
+
     # Extract and save certificate
     # await tv.get_certificate("tv_cert.pem")
-    
+
     # Connect and register if needed
     await tv.connect()
     if not tv.client_key:
         client_key = await tv.register()
-    
+
     # Now use the client property to access lower-level API
     client = tv.client
-    
+
     # Close connection
     await tv.close()
 
@@ -143,7 +150,7 @@ matches = await verify_certificate("tv_cert.pem", "192.168.1.100", 3001)
 
 ## Client Key Management
 
-Unlike some other libraries, AsyncWebOSTV does not save client keys to disk by default. 
+Unlike some other libraries, AsyncWebOSTV does not save client keys to disk by default.
 Instead, it returns the client key to the caller through a provided dictionary.
 
 ```python
@@ -184,22 +191,26 @@ Check out the `examples` directory for more usage examples:
 ## Development
 
 1. Clone the repository:
+
 ```bash
 git clone https://github.com/yourusername/asyncwebostv.git
 cd asyncwebostv
 ```
 
 2. Install development dependencies:
+
 ```bash
 pip install -e ".[dev]"
 ```
 
 3. Run tests:
+
 ```bash
 pytest
 ```
 
 4. Format code:
+
 ```bash
 black .
 isort .
@@ -216,4 +227,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Original `pywebostv` library for inspiration
-- LG for their WebOS platform 
+- LG for their WebOS platform
