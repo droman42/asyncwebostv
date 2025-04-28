@@ -6,7 +6,8 @@ An asynchronous Python library for controlling LG WebOS TVs. This is an async po
 
 - Asynchronous API for controlling LG WebOS TVs
 - WebSocket-based communication
-- Support for all major TV controls (media, system, input, etc.)
+- Support for all major TV controls (media, system, input, applications, TV channels, sources, etc.)
+- Network device discovery using Zeroconf (optional dependency)
 - **Secure SSL/TLS connections with certificate handling**
 - Modern Python async/await syntax
 - Type hints for better IDE support
@@ -15,9 +16,13 @@ An asynchronous Python library for controlling LG WebOS TVs. This is an async po
 ## Requirements
 
 - Python 3.7+
-- websockets 15.0.1+
-- aiohttp 3.8.0+
-- zeroconf 0.36.0+
+- aiohttp>=3.8.0
+- websockets>=15.0.1
+- aiofiles>=0.8.0
+- typing_extensions>=4.0.0
+- aiohttp-sse-client>=0.2.0
+- aiohttp-socks>=0.7.0
+- zeroconf>=0.36.0+ (Optional, for network discovery)
 
 ## Installation
 
@@ -30,7 +35,9 @@ pip install asyncwebostv
 ```python
 import asyncio
 from asyncwebostv.connection import WebOSClient
-from asyncwebostv.controls import MediaControl, SystemControl
+from asyncwebostv.controls import (
+    MediaControl, SystemControl, ApplicationControl, TvControl, InputControl, SourceControl
+)
 
 async def main():
     # Create a WebOS client
@@ -177,16 +184,6 @@ This approach gives you more control over how client keys are stored and managed
 ## Documentation
 
 For detailed documentation, please visit our [documentation page](https://github.com/yourusername/asyncwebostv/wiki).
-
-## Examples
-
-Check out the `examples` directory for more usage examples:
-
-- `simple_example.py` - Basic TV control
-- `secure_client_example.py` - Using SecureWebOSClient for secure connections
-- `secure_tv_example.py` - Using SecureWebOSTV high-level API with security
-- `subscription_example.py` - Working with event subscriptions
-- `discover_tv.py` - Discovering TVs on the network
 
 ## Development
 
