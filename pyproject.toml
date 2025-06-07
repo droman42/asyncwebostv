@@ -61,3 +61,8 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 check_untyped_defs = true
+
+[dependency-groups]
+dev = [
+    "pyyaml>=6.0.2",
+]

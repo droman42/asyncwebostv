@@ -1,0 +1,125 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Create virtual environment
+        run: uv venv --python ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev
+
+      - name: Run tests
+        run: |
+          # Run pytest with options to treat warnings as non-fatal
+          # Ignore integration tests as they require actual TV hardware
+          # Warnings will be shown but won't fail the build
+          # We use --tb=short for concise error output in CI
+          uv run pytest tests/ -v --tb=short --ignore=tests/integration/
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-python-${{ matrix.python-version }}
+          path: |
+            .pytest_cache/
+          retention-days: 7
+
+  test-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Create virtual environment
+        run: uv venv --python 3.11
+
+      - name: Install dependencies with coverage tools
+        run: |
+          uv sync --extra dev
+          uv add pytest-cov
+
+      - name: Run tests with coverage
+        run: |
+          # Run coverage tests, ignoring integration tests
+          uv run pytest tests/ --cov=asyncwebostv --cov-report=xml --cov-report=html --ignore=tests/integration/
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-reports
+          path: |
+            htmlcov/
+            coverage.xml
+          retention-days: 30
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Create virtual environment
+        run: uv venv --python 3.11
+
+      - name: Install dependencies and linting tools
+        run: |
+          uv sync --extra dev
+          uv add flake8 black isort mypy
+
+      - name: Check code formatting with black
+        run: uv run black --check --diff asyncwebostv/ tests/
+        continue-on-error: true # Don't fail the build on formatting issues
+
+      - name: Check import sorting with isort
+        run: uv run isort --check-only --diff asyncwebostv/ tests/
+        continue-on-error: true # Don't fail the build on import sorting issues
+
+      - name: Lint with flake8
+        run: uv run flake8 asyncwebostv/ tests/ --max-line-length=88 --extend-ignore=E203,W503
+        continue-on-error: true # Don't fail the build on linting issues
