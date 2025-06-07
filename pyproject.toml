@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "asyncwebostv"
-version = "0.1.1"
+version = "0.2.5"
 description = "Asynchronous client library for LG WebOS TVs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,9 +34,12 @@ dev = [
     "mypy>=0.900",
 ]
 
-[tool.setuptools]
-packages = ["asyncwebostv"]
-package-data = { "asyncwebostv" = ["py.typed"] }
+[tool.setuptools.packages.find]
+include = ["asyncwebostv*"]
+exclude = ["tests*", "docs*", "scripts*"]
+
+[tool.setuptools.package-data]
+asyncwebostv = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -63,6 +66,4 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [dependency-groups]
-dev = [
-    "pyyaml>=6.0.2",
-]
+dev = ["build>=1.2.2.post1", "pyyaml>=6.0.2"]

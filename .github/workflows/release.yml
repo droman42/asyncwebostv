@@ -1,0 +1,183 @@
+name: Release to PyPI
+
+on:
+  push:
+    tags:
+      - "v*" # Trigger on tags starting with 'v' (e.g., v1.2.3)
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_version: ${{ steps.version.outputs.tag_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Extract and validate versions
+        id: version
+        run: |
+          # Extract version from git tag (remove 'v' prefix)
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          echo "tag_version=$TAG_VERSION" >> $GITHUB_OUTPUT
+
+          # Extract version from pyproject.toml
+          PYPROJECT_VERSION=$(python -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              data = tomllib.load(f)
+              print(data['project']['version'])
+          ")
+          echo "version=$PYPROJECT_VERSION" >> $GITHUB_OUTPUT
+
+          # Validate versions match
+          if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ]; then
+            echo "❌ ERROR: Version mismatch!"
+            echo "Git tag version: $TAG_VERSION"
+            echo "pyproject.toml version: $PYPROJECT_VERSION"
+            echo ""
+            echo "Please ensure the git tag matches the version in pyproject.toml"
+            echo "Expected tag: v$PYPROJECT_VERSION"
+            echo "Actual tag: v$TAG_VERSION"
+            exit 1
+          fi
+
+          echo "✅ Version validation passed: $TAG_VERSION"
+
+  build:
+    needs: validate-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install build dependencies
+        run: |
+          uv add build twine
+
+      - name: Build source distribution and wheel
+        run: |
+          echo "Building asyncwebostv v${{ needs.validate-version.outputs.version }}"
+          uv run python -m build
+
+      - name: Verify distributions
+        run: |
+          uv run twine check dist/*
+          echo "Built distributions:"
+          ls -la dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+          retention-days: 7
+
+  publish-pypi:
+    needs: [validate-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for PyPI trusted publishing
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true
+          verbose: true
+
+  create-github-release:
+    needs: [validate-version, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to create releases
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch full history for changelog generation
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the previous tag
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -v "^${{ github.ref_name }}$" | head -1)
+
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "No previous tag found, using initial commit"
+            PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD)
+          fi
+
+          echo "Generating changelog from $PREVIOUS_TAG to ${{ github.ref_name }}"
+
+          # Generate changelog
+          cat > CHANGELOG.md << EOF
+          ## Changes in v${{ needs.validate-version.outputs.version }}
+
+          ### Commits since $PREVIOUS_TAG:
+
+          EOF
+
+          git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..${{ github.ref_name }} >> CHANGELOG.md
+
+          # Read changelog content for the release
+          CHANGELOG_CONTENT=$(cat CHANGELOG.md)
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: AsyncWebOSTV v${{ needs.validate-version.outputs.version }}
+          body: |
+            # AsyncWebOSTV v${{ needs.validate-version.outputs.version }}
+
+            🎉 **New release of AsyncWebOSTV is now available on PyPI!**
+
+            ## Installation
+            ```bash
+            pip install asyncwebostv==${{ needs.validate-version.outputs.version }}
+            ```
+
+            ## What's Changed
+            ${{ steps.changelog.outputs.changelog }}
+
+            ## PyPI Package
+            📦 [View on PyPI](https://pypi.org/project/asyncwebostv/${{ needs.validate-version.outputs.version }}/)
+
+            ## Documentation
+            📚 [View Documentation](https://github.com/papathanasiou/asyncwebostv/blob/main/README.md)
+          draft: false
+          prerelease: false
+          files: dist/*

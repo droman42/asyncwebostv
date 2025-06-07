@@ -1,0 +1,60 @@
+# Include essential files
+include README.md
+include LICENSE
+include pyproject.toml
+
+# Include source code
+recursive-include asyncwebostv *.py
+include asyncwebostv/py.typed
+
+# Exclude everything else
+exclude setup.py
+exclude requirements.txt
+
+# Exclude development and testing files
+exclude .gitignore
+exclude .pre-commit-config.yaml
+exclude mypy.ini
+exclude pyrightconfig.json
+exclude pyvenv.cfg
+
+# Exclude directories
+prune tests/
+prune docs/
+prune .github/
+prune scripts/
+prune .vscode/
+prune .pytest_cache/
+prune .mypy_cache/
+prune __pycache__/
+prune *.egg-info/
+prune build/
+prune dist/
+prune .venv/
+prune bin/
+prune lib/
+prune lib64/
+prune include/
+
+# Exclude OS and editor files
+global-exclude .DS_Store
+global-exclude Thumbs.db
+global-exclude *.swp
+global-exclude *.swo
+global-exclude *~
+global-exclude ".#*"
+global-exclude #*#
+global-exclude *.orig
+global-exclude *.rej
+
+# Exclude version control
+global-exclude .git*
+global-exclude .hg*
+global-exclude .svn*
+
+# Exclude lock files and caches
+exclude uv.lock
+exclude poetry.lock
+exclude Pipfile.lock
+global-exclude *.pyc
+global-exclude *.pyo 
