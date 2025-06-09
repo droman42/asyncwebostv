@@ -41,14 +41,15 @@ class TestWebOSClient:
         
         with patch('websockets.client.connect', new_callable=AsyncMock, return_value=mock_websocket) as mock_connect:
             await client.connect()
-            
-            mock_connect.assert_called_once_with(
-                "ws://192.168.1.100:3000/",
-                extra_headers=[],
-                origin=None
-            )
-            assert client.connection == mock_websocket
-            assert client.task is not None
+
+        mock_connect.assert_called_once_with(
+            "ws://192.168.1.100:3000/",
+            extra_headers=[],
+            origin=None,
+            ping_interval=None
+        )
+        assert client.connection == mock_websocket
+        assert client.task is not None
     
     @pytest.mark.asyncio
     async def test_connect_already_connecting(self):
@@ -77,7 +78,8 @@ class TestWebOSClient:
             mock_connect.assert_called_once_with(
                 "ws://192.168.1.100:3000/",
                 extra_headers=[],
-                origin=None
+                origin=None,
+                ping_interval=None
             )
     
     @pytest.mark.asyncio
