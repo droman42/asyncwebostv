@@ -266,6 +266,7 @@ class MediaControl(WebOSControlBase):
         "get_volume": {
             "uri": "ssap://audio/getVolume",
             "validation": standard_validation,
+            "subscription": True,
         },
         "set_volume": {
             "uri": "ssap://audio/setVolume",
@@ -524,6 +525,11 @@ class SystemControl(WebOSControlBase):
         "get_settings": {
             "uri": "ssap://settings/getSystemSettings",
             "validation": standard_validation,
+        },
+        "power_state": {
+            "uri": "ssap://com.webos.service.power/power/getPowerState",
+            "validation": standard_validation,
+            "subscription": True,
         },
     }
 

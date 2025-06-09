@@ -74,7 +74,7 @@ async def monitor_volume(media_control):
         else:
             logger.error("Volume callback error: %s", payload)
     
-    # Subscribe to volume changes
+    # Subscribe to volume changes (NEW: now supports subscription!)
     await media_control.subscribe_get_volume(volume_callback)
     logger.info("Volume monitoring active")
 
@@ -91,7 +91,7 @@ async def monitor_power_state(system_control):
         else:
             logger.error("Power state callback error: %s", payload)
     
-    # Subscribe to power state changes
+    # Subscribe to power state changes (NEW: now implemented!)
     await system_control.subscribe_power_state(power_callback)
     logger.info("Power state monitoring active")
 
