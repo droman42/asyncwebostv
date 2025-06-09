@@ -176,7 +176,8 @@ class WebOSClient:
             self.connection = await websockets.client.connect(
                 self.ws_url,
                 extra_headers=[], # Empty list to avoid default headers including Origin
-                origin=None  # Explicitly set origin to None
+                origin=None,  # Explicitly set origin to None
+                ping_interval=None  # Disable ping/pong to fix LG TV power-off issues
             )
             # Start the message handling task
             self.task = asyncio.create_task(self._handle_messages())
