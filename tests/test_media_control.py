@@ -3,7 +3,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Dict, Any
 
-from asyncwebostv.controls import MediaControl, standard_validation
+from asyncwebostv.controls import MediaControl, _unwrap_volume, standard_validation
 from asyncwebostv.model import AudioOutputSource
 
 
@@ -322,9 +322,52 @@ class TestMediaControl:
         """Test command execution with custom timeout."""
         with patch.object(media_control, 'request') as mock_request:
             mock_request.return_value = mock_successful_response
-            
+
             await media_control.get_volume(timeout=30)
-            
+
             # Verify request was called with custom timeout
             call_args = mock_request.call_args
-            assert call_args.kwargs['timeout'] == 30 
+            assert call_args.kwargs['timeout'] == 30
+
+    def test_get_volume_return_unwraps_volume_status_wrapper(self):
+        """HW capture (webOS 6.x, 2026-05-27) showed that real getVolume
+        events wrap their fields inside a `volumeStatus` sub-dict and
+        rename `muted` to `muteStatus`. The library's _unwrap_volume must
+        normalise that to the documented flat shape."""
+        real_webos_payload = {
+            "volumeStatus": {
+                "cause": "volumeUp",
+                "mode": "normal",
+                "adjustVolume": True,
+                "activeStatus": True,
+                "muteStatus": False,
+                "volume": 20,
+                "soundOutput": "tv_speaker",
+                "maxVolume": 100,
+            },
+            "returnValue": True,
+            "callerId": "com.webos.platformstarfish",
+        }
+        out = _unwrap_volume(real_webos_payload)
+        assert out["volume"] == 20
+        assert out["muted"] is False
+        assert out["soundOutput"] == "tv_speaker"
+        assert out["returnValue"] is True
+
+    def test_get_volume_return_passes_flat_payload_through(self):
+        """Defensive: if a (hypothetical) firmware delivers the documented
+        flat shape directly, don't mangle it."""
+        flat = {"volume": 30, "muted": True, "returnValue": True}
+        assert _unwrap_volume(flat) == flat
+
+    def test_get_volume_return_handles_non_dict_input(self):
+        """Pass-through for non-dict inputs (defensive against malformed
+        upstream events)."""
+        assert _unwrap_volume(None) is None
+        assert _unwrap_volume("not a dict") == "not a dict"
+
+    def test_get_volume_cmd_info_wires_unwrap_helper(self):
+        """The 'return' function for get_volume must be _unwrap_volume, so
+        that subscription events get normalised before reaching consumer
+        callbacks."""
+        assert MediaControl.COMMANDS["get_volume"]["return"] is _unwrap_volume

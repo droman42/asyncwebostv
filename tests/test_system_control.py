@@ -365,9 +365,18 @@ class TestSystemControl:
         """Test command execution with custom timeout."""
         with patch.object(system_control, 'request') as mock_request:
             mock_request.return_value = mock_successful_response
-            
+
             await system_control.info(timeout=30)
-            
+
             # Verify request was called with custom timeout
             call_args = mock_request.call_args
-            assert call_args.kwargs['timeout'] == 30 
+            assert call_args.kwargs['timeout'] == 30
+
+    def test_power_state_uses_modern_tvpower_endpoint(self):
+        """Hardware-verified on webOS 6.x (2026-05-27): the legacy
+        com.webos.service.power URI is dead — subscribe is accepted then
+        the TV immediately replies 'Unknown error' and never emits events.
+        The library must use com.webos.service.tvpower instead. Don't
+        revert without testing on a pre-2018 TV."""
+        assert SystemControl.COMMANDS["power_state"]["uri"] == \
+            "ssap://com.webos.service.tvpower/power/getPowerState"

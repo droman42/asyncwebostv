@@ -70,16 +70,43 @@ def process_payload(obj, *args, **kwargs):
 
 def standard_validation(payload):
     """Standard validation for WebOS TV responses.
-    
+
     Args:
         payload: Response payload to validate
-        
+
     Returns:
         Tuple of (success, error_message)
     """
     if not payload.pop("returnValue", None):
         return False, payload.pop("errorText", "Unknown error.")
     return True, None
+
+
+def _unwrap_volume(payload):
+    """Normalize getVolume payload to the flat shape documented in
+    docs/subscription_spec.md.
+
+    webOS 4.x+ firmware delivers volume events wrapped in a `volumeStatus`
+    sub-dict with `muteStatus` rather than `muted`:
+
+        {'volumeStatus': {'volume': N, 'muteStatus': bool, 'soundOutput': str,
+                          'cause': str, 'mode': str, 'maxVolume': int, ...},
+         'returnValue': True, 'callerId': str}
+
+    Older firmware may deliver the flat shape directly. Handle both so a
+    future firmware that flattens doesn't break consumers.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    vs = payload.get("volumeStatus")
+    if isinstance(vs, dict):
+        return {
+            "volume":      vs.get("volume", payload.get("volume")),
+            "muted":       vs.get("muteStatus", payload.get("muted")),
+            "soundOutput": vs.get("soundOutput", payload.get("soundOutput")),
+            "returnValue": payload.get("returnValue", True),
+        }
+    return payload
 
 
 class WebOSControlBase:
@@ -267,6 +294,7 @@ class MediaControl(WebOSControlBase):
             "uri": "ssap://audio/getVolume",
             "validation": standard_validation,
             "subscription": True,
+            "return": _unwrap_volume,
         },
         "set_volume": {
             "uri": "ssap://audio/setVolume",
@@ -276,7 +304,7 @@ class MediaControl(WebOSControlBase):
         "get_mute": {
             "uri": "ssap://audio/getStatus",
             "validation": standard_validation,
-            "return": lambda payload: payload["mute"]
+            "return": lambda payload: payload.get("mute")
         },
         "set_mute": {
             "uri": "ssap://audio/setMute",
@@ -526,14 +554,14 @@ class SystemControl(WebOSControlBase):
             "uri": "ssap://settings/getSystemSettings",
             "validation": standard_validation,
         },
-        # NOTE: webOS 4.x+ firmware appears to have moved this endpoint to
-        # `ssap://com.webos.service.tvpower/power/getPowerState` (note the
-        # `tvpower` service). aiowebostv, which targets recent LG OLEDs, uses
-        # the new URI. The legacy URI below matches pywebostv and works on
-        # older firmware; if subscription events stop arriving on a newer TV,
-        # try the tvpower variant. See docs/subscription_spec.md.
+        # URI history: pywebostv targeted `com.webos.service.power`. That
+        # endpoint is dead on webOS 4.x+ firmware (subscribe is accepted then
+        # the TV immediately replies with "Unknown error" and never emits
+        # events). aiowebostv targets `com.webos.service.tvpower`, which is
+        # what works on current LG OLEDs (HW-verified on webOS 6.x,
+        # 2026-05-27). Don't revert without testing on a pre-2018 TV.
         "power_state": {
-            "uri": "ssap://com.webos.service.power/power/getPowerState",
+            "uri": "ssap://com.webos.service.tvpower/power/getPowerState",
             "validation": standard_validation,
             "subscription": True,
         },
@@ -1162,13 +1190,24 @@ class InputControl(WebOSControlBase):
         
     async def get_input(self) -> Dict[str, Any]:
         """Get the current input source.
-        
+
         Returns:
-            Dict containing information about the current input source
+            Dict containing information about the current input source. The
+            return is guaranteed to contain an `inputId` key when the TV
+            reports a current input — synthesised from `id` or `input_id` if
+            the firmware uses those names instead. Companion `list_inputs()`
+            on current webOS reports the same identifier under `id` on each
+            device entry, so consumers can rely on `inputId` here.
         """
         queue = await self.client.send_message('request', 'ssap://tv/getCurrentExternalInput', {}, get_queue=True)
         response = await queue.get()
-        return response.get('payload', {})
+        payload = response.get('payload', {})
+        if isinstance(payload, dict) and "inputId" not in payload:
+            for alt_key in ("id", "input_id"):
+                if alt_key in payload:
+                    payload["inputId"] = payload[alt_key]
+                    break
+        return payload
     
     async def set_input(self, input_id: str) -> Dict[str, Any]:
         """Switch to a different input source.

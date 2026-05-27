@@ -55,11 +55,19 @@ Monitor real-time volume level and mute status changes.
 
 ```python
 {
-    "volume": 25,        # Current volume level (0-100)
-    "muted": false,      # Whether audio is muted
-    "returnValue": true  # Success indicator
+    "volume": 25,           # Current volume level (0-100)
+    "muted": false,         # Whether audio is muted
+    "soundOutput": "tv_speaker",  # Active sound output (added v0.3.1)
+    "returnValue": true     # Success indicator
 }
 ```
+
+> **Note (v0.3.1+):** webOS 4.x+ firmware actually delivers this event with
+> the real fields wrapped inside a `volumeStatus` sub-dict and renames
+> `muted` to `muteStatus`. The library normalises that to the flat shape
+> shown above so consumers can always read `payload["volume"]` and
+> `payload["muted"]` regardless of firmware version. See the v0.3.1
+> changelog for the gory details.
 
 #### Usage Example
 
@@ -228,10 +236,10 @@ await tv.subscribe_get_current_channel(channel_handler)
 
 ### 5. Power State Subscription ⚡
 
-**Control Class:** `SystemControl`  
-**Methods:** `subscribe_power_state()` / `unsubscribe_power_state()`  
-**URI:** `ssap://com.webos.service.power/power/getPowerState`  
-**Added:** v0.1.1 ✨
+**Control Class:** `SystemControl`
+**Methods:** `subscribe_power_state()` / `unsubscribe_power_state()`
+**URI:** `ssap://com.webos.service.tvpower/power/getPowerState`
+**Added:** v0.1.1 ✨ (switched from `com.webos.service.power` to `com.webos.service.tvpower` in v0.3.1 — see note below)
 
 Monitor TV power state and power management events.
 
@@ -271,18 +279,18 @@ def is_tv_on(state: str | None) -> bool:
 `"Screen Off"` and `"Screen Saver"` are considered "TV on, screen off" —
 the TV continues to accept commands.
 
-#### Endpoint divergence on newer firmware
+#### History note — URI moved in v0.3.1
 
-Our `SystemControl.power_state` targets the URI
-`ssap://com.webos.service.power/power/getPowerState` (the historic endpoint,
-also used by upstream `pywebostv`).
+Versions ≤ v0.3.0 targeted the older `ssap://com.webos.service.power/power/getPowerState`
+URI (inherited from `pywebostv`). That endpoint is dead on webOS 4.x+
+firmware — the subscribe call is accepted, the TV immediately replies
+`"Unknown error"`, and no events ever fire. Hardware-verified on a
+2021 LG OLED (webOS 6.x) on 2026-05-27.
 
-Newer webOS firmware (webOS 4.x+) appears to have moved this endpoint to
-`ssap://com.webos.service.tvpower/power/getPowerState` (note the `tvpower`
-service). The `aiowebostv` library, which targets recent LG OLEDs, uses the
-new URI. We have not yet verified on hardware whether the legacy URI still
-responds on webOS 5.x/6.x firmware. If subscriptions silently stop arriving
-on a newer TV, this endpoint divergence is the first thing to check.
+v0.3.1+ targets `ssap://com.webos.service.tvpower/...` (matches
+`aiowebostv`), which works on every TV from 2018 onward. If you maintain
+a pre-2018 deployment and need the legacy URI, override `SystemControl.COMMANDS["power_state"]["uri"]`
+at runtime.
 
 #### Usage Example
 
