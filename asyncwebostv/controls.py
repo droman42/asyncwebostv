@@ -986,86 +986,96 @@ class InputControl(WebOSControlBase):
         
     def _create_click_method(self):
         """Create a method for clicking.
-        
+
         Returns:
             Function that sends a click command
         """
         async def click_method(x=None, y=None, drag=False):
-            """Send a click command to the TV.
-            
-            Args:
-                x: X-coordinate (optional)
-                y: Y-coordinate (optional)
-                drag: Whether to drag (optional)
+            """Send a click command to the TV at the current cursor position.
+
+            webOS's pointer-socket click protocol takes no coordinates and no
+            drag flag — it always clicks at the current cursor location. The
+            ``x``, ``y`` and ``drag`` parameters are accepted only for
+            backwards compatibility with pre-v0.3.3 callers; they are
+            **ignored on the wire**. To click at a specific location, call
+            ``move(dx, dy)`` first to position the cursor, then ``click()``.
+
+            See docs/pointer_spec.md for the wire format.
             """
+            if x is not None or y is not None or drag:
+                logger.debug(
+                    "InputControl.click(): x/y/drag args are deprecated and "
+                    "ignored on the wire (webOS click protocol takes no "
+                    "coordinates). Call move(dx, dy) to position first."
+                )
             if not self._is_connected:
                 await self.connect_input()
-            
-            payload = {"type": "click"}
-            if x is not None and y is not None:
-                payload["x"] = x
-                payload["y"] = y
-            
-            if drag:
-                payload["drag"] = True
-                
-            return await self._send_pointer_command(payload)
+            return await self._send_pointer_command({"type": "click"})
         return click_method
-        
+
     def _create_move_method(self):
         """Create a method for moving the pointer.
-        
+
         Returns:
             Function that sends a move command
         """
-        async def move_method(x, y, drag=False):
-            """Send a move command to the TV.
-            
+        async def move_method(dx, dy, drag=False):
+            """Send a pointer move command (relative delta) to the TV.
+
+            webOS's pointer-socket move protocol takes *deltas* from the
+            current cursor position — there is no absolute-positioning
+            endpoint exposed by webOS. ``dx`` and ``dy`` are added to the
+            current cursor location.
+
             Args:
-                x: X-coordinate
-                y: Y-coordinate
-                drag: Whether to drag (optional)
+                dx: Horizontal delta (positive moves right, negative moves left).
+                dy: Vertical delta (positive moves down, negative moves up).
+                drag: When True, the move is treated as a drag (pointer
+                    button held down). Maps to the protocol's ``down:1``.
+
+            See docs/pointer_spec.md for the wire format. Pre-v0.3.3
+            versions sent ``x:N\\ny:N\\n`` instead of ``dx:N\\ndy:N\\n``,
+            which webOS silently ignored — all earlier move() calls were
+            no-ops on the wire.
             """
             if not self._is_connected:
                 await self.connect_input()
-            
-            payload = {
+            return await self._send_pointer_command({
                 "type": "move",
-                "x": x,
-                "y": y
-            }
-            
-            if drag:
-                payload["drag"] = True
-                
-            return await self._send_pointer_command(payload)
+                "dx": dx,
+                "dy": dy,
+                "down": 1 if drag else 0,
+            })
         return move_method
-    
+
     def _create_scroll_method(self):
         """Create a method for scrolling.
-        
+
         Returns:
             Function that sends a scroll command
         """
-        async def scroll_method(x, y, wheel_direction):
-            """Send a scroll command to the TV.
-            
+        async def scroll_method(dx, dy):
+            """Send a scroll command (relative delta) to the TV.
+
+            webOS's pointer-socket scroll protocol takes ``dx``/``dy``
+            deltas; the direction of scroll is encoded in the sign of
+            ``dy`` (positive = scroll down, negative = scroll up). There
+            is no separate ``wheelDirection`` field — pre-v0.3.3 versions
+            that sent one had no effect on the wire.
+
             Args:
-                x: X-coordinate
-                y: Y-coordinate
-                wheel_direction: Direction to scroll
+                dx: Horizontal scroll delta.
+                dy: Vertical scroll delta (positive = down, negative = up).
+
+            See docs/pointer_spec.md for the wire format.
             """
             if not self._is_connected:
                 await self.connect_input()
-            
-            payload = {
+            return await self._send_pointer_command({
                 "type": "scroll",
-                "x": x,
-                "y": y,
-                "wheelDirection": wheel_direction
-            }
-                
-            return await self._send_pointer_command(payload)
+                "dx": dx,
+                "dy": dy,
+            })
         return scroll_method
     
     async def connect_input(self):
@@ -1145,13 +1155,15 @@ class InputControl(WebOSControlBase):
                             self.pointer_socket_uri,
                             **connect_kwargs
                         )
-                        
-                        # Send a registration command exactly like PyWebOSTV does
-                        # This is a critical step that was missing in the original implementation
-                        logger.debug("Registering with pointer socket")
-                        register_payload = "register\n\n"
-                        await self._pointer_websocket.send(register_payload)
-                        
+
+                        # Pre-v0.3.3 sent a `register\n\n` preamble here,
+                        # with a comment claiming parity with pywebostv.
+                        # That claim was false (neither pywebostv's
+                        # WebOSWebSocketClient nor lgtv2's SpecializedSocket
+                        # sends one), and removing it does not break
+                        # connect on current firmware. The TV accepts the
+                        # raw command stream directly.
+
                         # If we get here without exception, connection is successful
                         self._is_connected = True
                         logger.info("Successfully connected to pointer input socket")
