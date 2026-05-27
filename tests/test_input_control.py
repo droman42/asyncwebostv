@@ -8,8 +8,9 @@ for any non-HDMI foreground.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from asyncwebostv.connection import WebOSClient
 from asyncwebostv.controls import InputControl, app_id_to_input_id
 
 
@@ -239,3 +240,49 @@ async def test_pointer_send_omits_register_preamble(mock_client):
         for call in inputs._pointer_websocket.send.call_args_list
     ]
     assert "register\n\n" not in sent_payloads
+
+
+@pytest.mark.asyncio
+async def test_connect_input_registers_disconnect_on_client():
+    """v0.3.4 lifecycle fix: after a successful connect_input(), the
+    control's disconnect_input must be registered as a close-callback on
+    the client. That ensures `await client.close()` tears the pointer
+    socket down even when consumers use WebOSClient directly without the
+    WebOSTV wrapper."""
+    client = WebOSClient("192.168.1.100")
+    inputs = InputControl(client)
+
+    # Bypass the SSAP request by patching the control's `request` method
+    # to return a stubbed pointer-socket URL.
+    async def fake_request(uri, params, block=False, timeout=60):
+        return {"payload": {"socketPath": "wss://test-tv:3001/pointer"}}
+    inputs.request = fake_request
+
+    mock_ws = AsyncMock()
+    with patch("websockets.client.connect", new_callable=AsyncMock, return_value=mock_ws):
+        await inputs.connect_input()
+
+    assert inputs._is_connected is True
+    assert inputs.disconnect_input in client._close_callbacks
+
+
+@pytest.mark.asyncio
+async def test_repeated_connect_input_does_not_double_register():
+    """Idempotency: a lazy-connect path may invoke connect_input() more
+    than once (e.g. send failure -> reconnect). The auto-registration must
+    NOT enqueue disconnect_input multiple times — once registered, future
+    connect_input() calls leave the callback list unchanged."""
+    client = WebOSClient("192.168.1.100")
+    inputs = InputControl(client)
+
+    async def fake_request(uri, params, block=False, timeout=60):
+        return {"payload": {"socketPath": "wss://test-tv:3001/pointer"}}
+    inputs.request = fake_request
+
+    mock_ws = AsyncMock()
+    with patch("websockets.client.connect", new_callable=AsyncMock, return_value=mock_ws):
+        await inputs.connect_input()
+        await inputs.connect_input()
+        await inputs.connect_input()
+
+    assert client._close_callbacks.count(inputs.disconnect_input) == 1

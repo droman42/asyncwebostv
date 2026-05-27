@@ -4,7 +4,7 @@ import json
 import time
 import asyncio
 from uuid import uuid4
-from typing import Dict, Any, Optional, Tuple, Callable, List, Union
+from typing import Awaitable, Dict, Any, Optional, Tuple, Callable, List, Union
 import logging
 
 import websockets
@@ -150,6 +150,12 @@ class WebOSClient:
         self.task: Optional[asyncio.Task] = None
         self._connecting = False
         self.client_key = client_key
+        # Callbacks invoked (in registration order) by close() before the
+        # main WebSocket is torn down. Used by InputControl to ensure its
+        # pointer socket is closed when the client is closed, even when
+        # the consumer is using WebOSClient directly without the WebOSTV
+        # high-level wrapper. See WebOSClient.register_close_callback.
+        self._close_callbacks: List[Callable[[], Awaitable[None]]] = []
 
     @staticmethod
     def discover_sync(secure=False) -> List["WebOSClient"]:
@@ -188,8 +194,39 @@ class WebOSClient:
         finally:
             self._connecting = False
 
+    def register_close_callback(
+        self, callback: Callable[[], Awaitable[None]]
+    ) -> None:
+        """Register a coroutine to be awaited during ``close()``.
+
+        Controls that hold their own auxiliary resources (the obvious case
+        is :class:`InputControl`, which holds a separate pointer-socket
+        WebSocket) call this after acquiring the resource. ``close()``
+        then awaits every registered callback before tearing down the
+        main socket, so consumers using :class:`WebOSClient` directly
+        (without the :class:`WebOSTV` high-level wrapper) don't leak
+        the auxiliary resource.
+
+        Duplicate registrations are silently ignored, so it's safe for a
+        control to call this from a lazy-connect path that may run more
+        than once.
+        """
+        if callback not in self._close_callbacks:
+            self._close_callbacks.append(callback)
+
     async def close(self) -> None:
         """Close the connection."""
+        # Run registered close callbacks first so dependent resources
+        # (e.g. InputControl's pointer socket) are torn down while the
+        # main socket is still alive — some teardown paths may need to
+        # send a final command.
+        for cb in list(self._close_callbacks):
+            try:
+                await cb()
+            except Exception as ex:
+                logger.exception("Close callback failed: %s", ex)
+        self._close_callbacks.clear()
+
         if self.connection:
             await self.connection.close()
             self.connection = None

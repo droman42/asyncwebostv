@@ -1166,6 +1166,16 @@ class InputControl(WebOSControlBase):
 
                         # If we get here without exception, connection is successful
                         self._is_connected = True
+
+                        # Register pointer-socket teardown with the main
+                        # client so `await client.close()` cleans us up
+                        # automatically. Idempotent — the registry
+                        # silently skips duplicates if connect_input()
+                        # runs more than once. See v0.3.4 changelog.
+                        register_cb = getattr(self.client, "register_close_callback", None)
+                        if callable(register_cb):
+                            register_cb(self.disconnect_input)
+
                         logger.info("Successfully connected to pointer input socket")
                         break
                         

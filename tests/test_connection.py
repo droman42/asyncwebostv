@@ -137,6 +137,59 @@ class TestWebOSClient:
         assert client.subscribers == {}
 
     @pytest.mark.asyncio
+    async def test_close_awaits_registered_callbacks(self, mock_websocket):
+        """v0.3.4 close-callback registry: controls holding auxiliary
+        resources (pointer socket) register a teardown coroutine, which
+        close() must await before tearing down the main socket."""
+        client = WebOSClient("192.168.1.100")
+        client.connection = mock_websocket
+
+        teardown = AsyncMock()
+        client.register_close_callback(teardown)
+
+        await client.close()
+
+        teardown.assert_awaited_once()
+        # Registry must be cleared so re-using the same client doesn't
+        # double-invoke stale callbacks.
+        assert client._close_callbacks == []
+
+    @pytest.mark.asyncio
+    async def test_register_close_callback_dedupes(self, mock_websocket):
+        """Idempotent registration: a control's lazy-connect path may run
+        more than once. Multiple register_close_callback calls with the
+        same callable must collapse to one invocation."""
+        client = WebOSClient("192.168.1.100")
+        client.connection = mock_websocket
+
+        teardown = AsyncMock()
+        client.register_close_callback(teardown)
+        client.register_close_callback(teardown)
+        client.register_close_callback(teardown)
+
+        await client.close()
+        teardown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_close_callback_failure_does_not_block_socket_close(self, mock_websocket):
+        """If a registered callback raises, close() must still proceed to
+        tear down the main socket and clear state. We log-and-continue."""
+        client = WebOSClient("192.168.1.100")
+        client.connection = mock_websocket
+
+        bad_teardown = AsyncMock(side_effect=RuntimeError("boom"))
+        good_teardown = AsyncMock()
+        client.register_close_callback(bad_teardown)
+        client.register_close_callback(good_teardown)
+
+        await client.close()
+
+        bad_teardown.assert_awaited_once()
+        good_teardown.assert_awaited_once()
+        mock_websocket.close.assert_called_once()
+        assert client._close_callbacks == []
+
+    @pytest.mark.asyncio
     async def test_concurrent_connect_second_caller_bails(self, mock_websocket):
         """Pins the current contract of the _connecting guard: a second
         connect() that races a first one returns immediately without dialing

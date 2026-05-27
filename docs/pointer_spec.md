@@ -72,13 +72,31 @@ the consumer must reconnect that first.
 
 `await input_control.close()` (which calls `disconnect_input()`)
 explicitly closes the pointer socket, clears `_pointer_websocket`, and
-resets `_is_connected`. The high-level `WebOSTV.close()` invokes this
-automatically before closing the main socket. Lower-level consumers
-using `WebOSClient` + `InputControl` directly should call
-`await input_control.close()` themselves before
-`await client.close()` — see the v0.3.0 reconnect contract in
-`subscription_spec.md` for the broader rule about discarding controls
-across a reconnect.
+resets `_is_connected`.
+
+**Auto-close as of v0.3.4.** When `connect_input()` succeeds, the
+control registers its `disconnect_input` as a close-callback on the
+client (via `WebOSClient.register_close_callback`). `await client.close()`
+then awaits the registered teardown coroutine **before** tearing down
+the main socket. This means:
+
+- High-level `WebOSTV.close()` users: nothing changes — the wrapper
+  already called `input.close()` explicitly, which is idempotent with
+  the auto-registration.
+- Low-level `WebOSClient` + bare `InputControl` users: previously had
+  to remember to call `await input_control.close()` themselves before
+  `await client.close()` or risk leaking the pointer-socket file
+  descriptor. As of v0.3.4 the client closes the pointer socket
+  automatically.
+
+Registration is **idempotent** — if `connect_input()` runs multiple
+times (lazy-reconnect path), the callback is registered only once.
+Callback failures are caught and logged; they do not block the main
+socket close.
+
+If you want manual control (e.g. to close the pointer socket without
+closing the main socket), `await input_control.close()` is still
+available and removes the resource cleanly.
 
 ---
 
