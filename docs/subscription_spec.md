@@ -367,6 +367,89 @@ await apps.subscribe_get_current(foreground_app_handler)
 
 ---
 
+## Current External Input (one-shot query)
+
+This is not a subscription — it's a one-shot request — but it's documented
+here because it's closely related to the foreground-app subscription above.
+
+### Why there's no dedicated "current input" subscription
+
+Per an LG webOS developer on LG's own forum
+([thread](https://forum.webostv.developer.lge.com/t/get-set-current-source-in-lg-webos-tv-programatically-api/16338)):
+
+> *"Currently, no APIs for getting TV input information are provided."*
+
+webOS exposes the *list* of available inputs
+(`ssap://tv/getExternalInputList`) and an *input-switch* command
+(`ssap://tv/switchInput`), but **no documented endpoint that returns the
+currently active external input**. The unofficial
+`ssap://tv/getCurrentExternalInput` endpoint exists on some firmware but
+its response is silent on current webOS (HW-verified on webOS 6.x).
+
+### How the library reports current input (v0.3.2+)
+
+`InputControl.get_input()` derives the current input from the foreground
+app id. webOS surfaces external-input apps as synthetic launcher apps with
+ids of the form `com.webos.app.hdmi<N>`. When the foreground is one of
+these, the TV is rendering HDMI port N; when it's anything else (launcher,
+Live TV, installed app), no external input is active.
+
+```python
+# Returned when foreground is com.webos.app.hdmi2:
+{
+    "appId":       "com.webos.app.hdmi2",
+    "inputId":     "HDMI_2",      # synthesised by the library
+    "windowId":    "",
+    "processId":   "1234",
+    "returnValue": True,
+}
+
+# Returned when foreground is the launcher (no external input active):
+{
+    "appId":       "com.webos.app.home",
+    "windowId":    "",
+    "processId":   "5678",
+    "returnValue": True,
+    # NOTE: no `inputId` key — there is no active external input to report.
+}
+```
+
+This matches the model that [`aiowebostv`](https://github.com/home-assistant-libs/aiowebostv)
+(the Home Assistant LG webOS integration) uses internally: its
+`get_input()` is literally `return await self.get_current_app()` — same
+single source of truth.
+
+### Helper for derivation in callbacks
+
+If you already subscribe to foreground-app changes (section #6 above) and
+want to keep a single derivation site for both `current_app` and the
+"current input" semantic, import the public helper:
+
+```python
+from asyncwebostv import app_id_to_input_id
+
+async def on_foreground_app_change(success, payload):
+    if not success:
+        return
+    app_id = payload.get("appId")
+    input_id = app_id_to_input_id(app_id)  # "HDMI_2" or None
+    # ... use input_id ...
+```
+
+`app_id_to_input_id(app_id)` returns `"HDMI_<N>"` for HDMI viewer apps,
+`None` for everything else. It's the same parser `get_input()` uses
+internally — there's no need to re-implement the regex.
+
+### Last-remembered HDMI: not exposed
+
+webOS provides no API for "last selected external input" — its model has
+no concept of one. If your application needs that semantic (e.g. "which
+HDMI was selected before the user opened the launcher"), track it
+locally: remember the last `com.webos.app.hdmi<N>` your foreground-app
+subscription saw before an internal-app foreground took over.
+
+---
+
 ## Complete Usage Example
 
 ```python

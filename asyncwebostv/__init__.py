@@ -7,7 +7,8 @@ from asyncwebostv.controls import (
     ApplicationControl,
     TvControl,
     InputControl,
-    SourceControl
+    SourceControl,
+    app_id_to_input_id,
 )
 # Import the SecureWebOSClient
 try:
@@ -17,7 +18,7 @@ except ImportError:
     pass
 
 # Export version
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 __all__ = [
     "WebOSClient",
@@ -30,6 +31,7 @@ __all__ = [
     "SecureWebOSClient",
     "extract_certificate",
     "verify_certificate",
+    "app_id_to_input_id",
 ]
 
 from .client import WebOSTV, SecureWebOSTV

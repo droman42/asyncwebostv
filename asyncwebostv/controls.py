@@ -4,6 +4,7 @@ import base64
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Callable, Union, Tuple
 from uuid import uuid4
 import websockets
@@ -80,6 +81,52 @@ def standard_validation(payload):
     if not payload.pop("returnValue", None):
         return False, payload.pop("errorText", "Unknown error.")
     return True, None
+
+
+_HDMI_APP_ID_RE = re.compile(r"^com\.webos\.app\.hdmi(\d+)$")
+
+
+def app_id_to_input_id(app_id: Optional[str]) -> Optional[str]:
+    """Map a webOS foreground app id to an external-input identifier.
+
+    Returns the matching input id (e.g. ``"HDMI_2"``) when ``app_id`` is
+    one of the synthetic HDMI viewer apps (``com.webos.app.hdmi<N>``).
+    Returns ``None`` for the launcher, Live TV, installed apps, or any
+    other foreground that does not correspond to an external input.
+
+    This helper is the canonical place to do the parsing: ``get_input()``
+    uses it internally, and consumers that derive ``input_source`` inside
+    their own foreground-app subscription callback should import it from
+    here rather than re-implementing the regex.
+
+    webOS provides no API to query the *currently active external input*
+    directly (per LG's own developer forum; see
+    docs/wb-mqtt-bridge-handoff-2026-05-27-3.md Finding 1). The foreground
+    app id is the canonical signal — when it matches
+    ``com.webos.app.hdmi<N>``, the TV is rendering HDMI port N. Anything
+    else means no external input is active.
+    """
+    if not app_id:
+        return None
+    match = _HDMI_APP_ID_RE.match(app_id)
+    if not match:
+        return None
+    return f"HDMI_{match.group(1)}"
+
+
+def _synth_input_id(payload):
+    """Return-function for cmd_info entries that surface the current input.
+
+    Mirrors :meth:`InputControl.get_input` — adds an ``inputId`` field to
+    the payload (synthesised from ``appId`` via :func:`app_id_to_input_id`)
+    when the foreground is an HDMI viewer, leaves it absent otherwise.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    input_id = app_id_to_input_id(payload.get("appId"))
+    if input_id is not None:
+        payload["inputId"] = input_id
+    return payload
 
 
 def _unwrap_volume(payload):
@@ -1189,24 +1236,43 @@ class InputControl(WebOSControlBase):
         return response.get('payload', {})
         
     async def get_input(self) -> Dict[str, Any]:
-        """Get the current input source.
+        """Get the current external input.
+
+        webOS exposes no documented endpoint that returns the currently active
+        external input directly (per an LG developer's reply on the LG webOS
+        forum — see docs/wb-mqtt-bridge-handoff-2026-05-27-3.md Finding 1).
+        The canonical signal is the foreground app id: when it matches
+        ``com.webos.app.hdmi<N>`` the TV is rendering HDMI port N; any other
+        foreground app means no external input is currently active. This
+        method calls ``ssap://com.webos.applicationManager/getForegroundAppInfo``
+        and synthesises a stable ``inputId`` field for HDMI cases via
+        :func:`app_id_to_input_id`.
 
         Returns:
-            Dict containing information about the current input source. The
-            return is guaranteed to contain an `inputId` key when the TV
-            reports a current input — synthesised from `id` or `input_id` if
-            the firmware uses those names instead. Companion `list_inputs()`
-            on current webOS reports the same identifier under `id` on each
-            device entry, so consumers can rely on `inputId` here.
+            Dict containing at minimum the raw ``appId`` and ``returnValue``
+            fields from the webOS response. When the foreground app is an
+            HDMI viewer, the dict also contains an ``inputId`` key
+            (e.g. ``"HDMI_2"``). When the foreground is the launcher, Live
+            TV, an installed app, or anything else, the ``inputId`` key is
+            **absent** — there is no active external input to report.
+
+        Behaviour change in v0.3.2: previously called the unofficial
+        ``getCurrentExternalInput`` endpoint, which is silent on current
+        firmware. See the v0.3.2 changelog for details.
         """
-        queue = await self.client.send_message('request', 'ssap://tv/getCurrentExternalInput', {}, get_queue=True)
+        queue = await self.client.send_message(
+            'request',
+            'ssap://com.webos.applicationManager/getForegroundAppInfo',
+            {},
+            get_queue=True,
+        )
         response = await queue.get()
         payload = response.get('payload', {})
-        if isinstance(payload, dict) and "inputId" not in payload:
-            for alt_key in ("id", "input_id"):
-                if alt_key in payload:
-                    payload["inputId"] = payload[alt_key]
-                    break
+        if not isinstance(payload, dict):
+            return payload
+        input_id = app_id_to_input_id(payload.get('appId'))
+        if input_id is not None:
+            payload['inputId'] = input_id
         return payload
     
     async def set_input(self, input_id: str) -> Dict[str, Any]:
@@ -1244,8 +1310,14 @@ class SourceControl(WebOSControlBase):
             "validation": standard_validation,
             "payload": arguments(0)
         },
+        # Was ssap://tv/getCurrentExternalInput pre-v0.3.2. That endpoint
+        # is undocumented and silent on current firmware (HW-confirmed on
+        # webOS 6.x). Now routes through getForegroundAppInfo and synthesises
+        # `inputId` from the foreground app id when it matches an HDMI
+        # viewer — same semantics as InputControl.get_input().
         "get_source_info": {
-            "uri": "ssap://tv/getCurrentExternalInput",
-            "validation": standard_validation
+            "uri": "ssap://com.webos.applicationManager/getForegroundAppInfo",
+            "validation": standard_validation,
+            "return": _synth_input_id,
         }
     }
