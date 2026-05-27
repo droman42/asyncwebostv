@@ -7,7 +7,8 @@ An asynchronous Python library for controlling LG WebOS TVs. This is an async po
 - Asynchronous API for controlling LG WebOS TVs
 - WebSocket-based communication
 - Support for all major TV controls (media, system, input, applications, TV channels, sources, etc.)
-- Network device discovery using Zeroconf (optional dependency)
+- **Real-time event subscriptions** (volume, channel, foreground app, power state, audio output)
+- SSDP-based network device discovery
 - **Secure SSL/TLS connections with certificate handling**
 - Modern Python async/await syntax
 - Type hints for better IDE support
@@ -15,14 +16,9 @@ An asynchronous Python library for controlling LG WebOS TVs. This is an async po
 
 ## Requirements
 
-- Python 3.7+
+- Python 3.11+
 - aiohttp>=3.8.0
 - websockets>=15.0.1
-- aiofiles>=0.8.0
-- typing_extensions>=4.0.0
-- aiohttp-sse-client>=0.2.0
-- aiohttp-socks>=0.7.0
-- zeroconf>=0.36.0+ (Optional, for network discovery)
 
 ## Installation
 
@@ -70,6 +66,51 @@ async def main():
 
 asyncio.run(main())
 ```
+
+## Subscriptions
+
+AsyncWebOSTV supports real-time event subscriptions so you don't have to poll
+the TV. Six subscriptions are available: `get_volume`, `get_audio_output`,
+`get_sound_output`, `get_current_channel`, `get_current` (foreground app),
+and `power_state`.
+
+```python
+import asyncio
+from asyncwebostv.connection import WebOSClient
+from asyncwebostv.controls import MediaControl, SystemControl
+
+async def main():
+    client = WebOSClient("192.168.1.100", client_key="your-client-key")
+    await client.connect()
+
+    media = MediaControl(client)
+    system = SystemControl(client)
+
+    async def on_volume(success, payload):
+        if success:
+            print(f"Volume: {payload.get('volume')} muted={payload.get('muted')}")
+
+    async def on_power(success, payload):
+        if success:
+            print(f"Power state: {payload.get('state')}")
+
+    await media.subscribe_get_volume(on_volume)
+    await system.subscribe_power_state(on_power)
+
+    try:
+        await asyncio.sleep(60)  # receive events for a minute
+    finally:
+        await media.unsubscribe_get_volume()
+        await system.unsubscribe_power_state()
+        await client.close()
+
+asyncio.run(main())
+```
+
+> **Reconnect note:** after `await client.close()`, discard your control
+> objects (`MediaControl`, `SystemControl`, etc.) and create fresh ones
+> against the new client before resubscribing. See the [subscription spec](docs/subscription_spec.md#4-connection-lost)
+> for the full reconnect contract and the complete list of event payloads.
 
 ## Secure Connections
 
@@ -183,14 +224,18 @@ This approach gives you more control over how client keys are stored and managed
 
 ## Documentation
 
-For detailed documentation, please visit our [documentation page](https://github.com/yourusername/asyncwebostv/wiki).
+Detailed documentation lives in the [`docs/`](docs/) directory:
+
+- [Subscription API](docs/subscription_spec.md) — real-time events (volume, channel, power state, foreground app, audio output) with payloads, callback contracts, and reconnect rules
+- [SSL / Secure Connections](docs/SSL_spec.md) — certificate handling and secure-mode design
+- [Async Migration Spec](docs/async_migration_spec.md) — the `pywebostv` → `asyncwebostv` port
 
 ## Development
 
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/asyncwebostv.git
+git clone https://github.com/droman42/asyncwebostv.git
 cd asyncwebostv
 ```
 

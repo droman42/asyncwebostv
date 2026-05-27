@@ -526,6 +526,12 @@ class SystemControl(WebOSControlBase):
             "uri": "ssap://settings/getSystemSettings",
             "validation": standard_validation,
         },
+        # NOTE: webOS 4.x+ firmware appears to have moved this endpoint to
+        # `ssap://com.webos.service.tvpower/power/getPowerState` (note the
+        # `tvpower` service). aiowebostv, which targets recent LG OLEDs, uses
+        # the new URI. The legacy URI below matches pywebostv and works on
+        # older firmware; if subscription events stop arriving on a newer TV,
+        # try the tvpower variant. See docs/subscription_spec.md.
         "power_state": {
             "uri": "ssap://com.webos.service.power/power/getPowerState",
             "validation": standard_validation,
@@ -677,6 +683,7 @@ class ApplicationControl(WebOSControlBase):
         "get_current": {
             "uri": "ssap://com.webos.applicationManager/getForegroundAppInfo",
             "validation": standard_validation,
+            "subscription": True,
             "return": lambda payload: Application(payload),
         },
         "launch": {

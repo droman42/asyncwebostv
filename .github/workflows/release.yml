@@ -177,7 +177,7 @@ jobs:
             📦 [View on PyPI](https://pypi.org/project/asyncwebostv/${{ needs.validate-version.outputs.version }}/)
 
             ## Documentation
-            📚 [View Documentation](https://github.com/papathanasiou/asyncwebostv/blob/main/README.md)
+            📚 [View Documentation](https://github.com/droman42/asyncwebostv/blob/main/README.md)
           draft: false
           prerelease: false
           files: dist/*

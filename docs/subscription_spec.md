@@ -248,11 +248,41 @@ Monitor TV power state and power management events.
 
 #### Power States
 
-- `"Active"` - TV is on and fully operational
-- `"Off"` - TV is completely powered off
-- `"Suspend"` - TV is in standby/sleep mode
-- `"Screen Off"` - Display off but system running
-- `"Power Saving"` - Low power mode
+The following `state` values have been observed in production deployments
+(values sourced from [aiowebostv](https://github.com/home-assistant-libs/aiowebostv)
+and [aiopylgtv issue #56](https://github.com/bendavid/aiopylgtv/issues/56)):
+
+- `"Active"` — TV is on and fully operational
+- `"Screen Off"` — Display off, system still running and responsive
+- `"Screen Saver"` — Screensaver currently active (TV still on)
+- `"Active Standby"` — Standby with network on (treat as **off** for power-on/off semantics)
+- `"Suspend"` — Suspended/sleeping (treat as **off**)
+- `"Power Off"` — Fully powered off
+- `None` / missing — Older webOS firmware that does not implement the
+  power-state endpoint at all (fall back to "is a current app running?" check)
+
+**Practical "is the TV on?" heuristic** (matches aiowebostv's logic):
+
+```python
+def is_tv_on(state: str | None) -> bool:
+    return state not in (None, "Power Off", "Suspend", "Active Standby")
+```
+
+`"Screen Off"` and `"Screen Saver"` are considered "TV on, screen off" —
+the TV continues to accept commands.
+
+#### Endpoint divergence on newer firmware
+
+Our `SystemControl.power_state` targets the URI
+`ssap://com.webos.service.power/power/getPowerState` (the historic endpoint,
+also used by upstream `pywebostv`).
+
+Newer webOS firmware (webOS 4.x+) appears to have moved this endpoint to
+`ssap://com.webos.service.tvpower/power/getPowerState` (note the `tvpower`
+service). The `aiowebostv` library, which targets recent LG OLEDs, uses the
+new URI. We have not yet verified on hardware whether the legacy URI still
+responds on webOS 5.x/6.x firmware. If subscriptions silently stop arriving
+on a newer TV, this endpoint divergence is the first thing to check.
 
 #### Usage Example
 
@@ -278,6 +308,54 @@ await system.subscribe_power_state(power_handler)
 - Sleep timer activation
 - Energy saving mode changes
 - Wake-on-LAN events
+
+---
+
+### 6. Foreground App Subscription 📱
+
+**Control Class:** `ApplicationControl`
+**Methods:** `subscribe_get_current()` / `unsubscribe_get_current()`
+**URI:** `ssap://com.webos.applicationManager/getForegroundAppInfo`
+**Added:** v0.1.2 ✨
+
+Monitor changes to the currently focused application (Live TV, Netflix,
+YouTube, an HDMI input, etc.). Event fires whenever the user launches a new
+app or switches inputs via the remote.
+
+#### Callback Payload
+
+The callback receives an `Application` object wrapping the raw payload:
+
+```python
+{
+    "appId": "com.webos.app.hdmi1",  # Application identifier
+    "windowId": "",
+    "processId": "...",
+    "returnValue": true
+}
+```
+
+#### Usage Example
+
+```python
+async def foreground_app_handler(success, app):
+    if success:
+        # `app` is an Application model wrapping the payload
+        app_id = app.data.get("appId", "unknown")
+        print(f"Foreground app: {app_id}")
+    else:
+        print(f"Foreground app subscription error: {app}")
+
+apps = ApplicationControl(client)
+await apps.subscribe_get_current(foreground_app_handler)
+```
+
+#### Trigger Events
+
+- User selects an app from the launcher
+- User switches HDMI input
+- App launches via `launch()` / `launch_with_monitoring()`
+- App exits / TV returns to Home
 
 ---
 
@@ -394,7 +472,35 @@ await media.subscribe_get_mute(callback)  # ❌ get_mute doesn't support subscri
 
 #### 4. Connection Lost
 
-When the WebSocket connection is lost, all subscriptions are automatically cleaned up. Apps must re-subscribe after reconnection.
+When the WebSocket connection is dropped via `await client.close()`, the
+client-side subscription bookkeeping (`waiters` and `subscribers` on
+`WebOSClient`) is cleared so nothing stale leaks into a reconnect. **However,
+the per-control `subscriptions` dict on each `*Control` instance is NOT
+cleared by `close()`.** Re-using the same control object after a reconnect
+will raise `ValueError("Already subscribed.")` on the next `subscribe_*()`
+call.
+
+**Reconnect contract:** consumers are responsible for re-subscribing after a
+reconnect. The recommended pattern is to **discard the old control objects
+and create fresh ones** against the new client:
+
+```python
+await client.close()
+# ... reconnect ...
+await client.connect()
+
+# Don't reuse the previous MediaControl / TvControl / SystemControl objects.
+media = MediaControl(client)
+tv = TvControl(client)
+system = SystemControl(client)
+
+# Now subscribe_* calls work cleanly.
+await media.subscribe_get_volume(volume_handler)
+```
+
+Connection drops that originate from the TV side (network loss, TV powered
+off) close the underlying websocket; the message-handling task ends and the
+same rule applies — re-create controls before re-subscribing.
 
 ### Error Handling Best Practices
 
@@ -557,15 +663,16 @@ await media.subscribe_get_volume(volume_handler)
 
 ## Summary
 
-AsyncWebOSTV provides **5 comprehensive subscriptions** for real-time TV monitoring:
+AsyncWebOSTV provides **6 comprehensive subscriptions** for real-time TV monitoring:
 
-| Subscription          | Control       | Purpose               | Added     |
-| --------------------- | ------------- | --------------------- | --------- |
-| `get_volume`          | MediaControl  | Volume/mute changes   | v0.1.1 ✨ |
-| `get_audio_output`    | MediaControl  | Audio device changes  | v0.1.0    |
-| `get_sound_output`    | MediaControl  | Sound routing changes | v0.1.0    |
-| `get_current_channel` | TvControl     | Channel changes       | v0.1.0    |
-| `power_state`         | SystemControl | Power state changes   | v0.1.1 ✨ |
+| Subscription          | Control            | Purpose                       | Added     |
+| --------------------- | ------------------ | ----------------------------- | --------- |
+| `get_volume`          | MediaControl       | Volume/mute changes           | v0.1.1 ✨ |
+| `get_audio_output`    | MediaControl       | Audio device changes          | v0.1.0    |
+| `get_sound_output`    | MediaControl       | Sound routing changes         | v0.1.0    |
+| `get_current_channel` | TvControl          | Channel changes               | v0.1.0    |
+| `get_current`         | ApplicationControl | Foreground app changes        | v0.1.2 ✨ |
+| `power_state`         | SystemControl      | Power state changes           | v0.1.1 ✨ |
 
 All subscriptions follow the **same consistent API pattern** with:
 

@@ -111,9 +111,45 @@ class TestWebOSClient:
     async def test_close_no_connection(self):
         """Test closing when no connection exists."""
         client = WebOSClient("192.168.1.100")
-        
+
         # Should not raise an exception
         await client.close()
+
+    @pytest.mark.asyncio
+    async def test_close_clears_subscription_state(self, mock_websocket):
+        """close() must drop waiters and subscribers so they cannot leak into
+        a subsequent reconnect. Otherwise stale callbacks linger in memory and
+        block re-subscribing to the same name."""
+        client = WebOSClient("192.168.1.100")
+        client.connection = mock_websocket
+
+        # Populate state as if a subscribe + an in-flight request had happened.
+        client.waiters["sub-uuid"] = (AsyncMock(), None)
+        client.waiters["req-uuid"] = (AsyncMock(), 12345.0)
+        client.subscribers["sub-uuid"] = "ssap://audio/getVolume"
+
+        assert client.waiters
+        assert client.subscribers
+
+        await client.close()
+
+        assert client.waiters == {}
+        assert client.subscribers == {}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_connect_second_caller_bails(self, mock_websocket):
+        """Pins the current contract of the _connecting guard: a second
+        connect() that races a first one returns immediately without dialing
+        and without waiting. Callers relying on `await connect()` meaning
+        "connection is ready" must serialize their own connect() calls."""
+        client = WebOSClient("192.168.1.100")
+        client._connecting = True  # simulate a connect() in flight
+
+        with patch("websockets.client.connect", new_callable=AsyncMock) as mock_connect:
+            await client.connect()
+            mock_connect.assert_not_called()
+            # Connection is NOT established for the second caller.
+            assert client.connection is None
     
     @pytest.mark.asyncio
     async def test_send_message_basic(self, mock_websocket, mock_queue):

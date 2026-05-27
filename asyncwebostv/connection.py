@@ -172,12 +172,16 @@ class WebOSClient:
             
         self._connecting = True
         try:
-            # Use websockets.connect directly with custom headers that exclude Origin
+            # Do NOT add ping_interval. WebSocket pings race against webOS
+            # subscription messages — most importantly the power-state
+            # standby-transition frame — and cause those events to be dropped
+            # mid-stream. If a keepalive is needed, run it at the application
+            # layer (e.g. periodic system.info() poll), never at the WS layer.
             self.connection = await websockets.client.connect(
                 self.ws_url,
                 extra_headers=[], # Empty list to avoid default headers including Origin
                 origin=None,  # Explicitly set origin to None
-                ping_interval=None  # Disable ping/pong to fix LG TV power-off issues
+                ping_interval=None
             )
             # Start the message handling task
             self.task = asyncio.create_task(self._handle_messages())
@@ -189,7 +193,7 @@ class WebOSClient:
         if self.connection:
             await self.connection.close()
             self.connection = None
-        
+
         if self.task and not self.task.done():
             self.task.cancel()
             try:
@@ -197,6 +201,13 @@ class WebOSClient:
             except asyncio.CancelledError:
                 pass
             self.task = None
+
+        # Drop pending request waiters and active subscription bookkeeping so
+        # nothing stale survives across a reconnect. Note: per-control
+        # subscription state (WebOSControlBase.subscriptions) is NOT touched
+        # here — callers must re-create control objects after close().
+        self.waiters.clear()
+        self.subscribers.clear()
 
     async def _handle_messages(self):
         """Handle incoming messages from the WebSocket."""
@@ -227,7 +238,16 @@ class WebOSClient:
             msg_id = obj.get("id")
             if msg_id and msg_id in self.waiters:
                 callback, created_time = self.waiters[msg_id]
-                
+
+                # The callback here is the *innermost* layer. For subscriptions
+                # the layering (outer → inner) is:
+                #   user callback(success, payload)              # docs contract
+                #     ← controls.WebOSControlBase.subscribe.callback_wrapper(payload)
+                #     ← connection.WebOSClient.subscribe.wrapper(obj)
+                #     ← this call site, which sees the raw message dict.
+                # The (success, payload) split is produced by the control-layer
+                # wrapper after running `validation` on the payload. See
+                # docs/subscription_spec.md for the user-facing contract.
                 try:
                     if asyncio.iscoroutinefunction(callback):
                         await callback(obj)
@@ -445,12 +465,16 @@ class WebOSClient:
             
         # Get URI from subscribers list
         uri = self.subscribers.pop(unique_id)
-        
+
         # Remove associated waiter
         if unique_id in self.waiters:
             self.waiters.pop(unique_id)
-            
-        # Send unsubscribe request
+
+        # The outgoing unsubscribe carries a *fresh* UUID (send_message
+        # generates one when unique_id is None), not the original subscription
+        # id. This is the upstream pywebostv convention and has been in
+        # production use for years — webOS matches the cancellation by URI.
+        # See tests/test_connection.py::test_unsubscribe which pins this.
         await self.send_message('unsubscribe', uri, None)
         
         logger.debug("Unsubscribed from %s with ID %s", uri, unique_id)
