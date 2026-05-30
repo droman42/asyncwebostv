@@ -197,15 +197,19 @@ class WebOSClient:
     def register_close_callback(
         self, callback: Callable[[], Awaitable[None]]
     ) -> None:
-        """Register a coroutine to be awaited during ``close()``.
+        """Register a coroutine to be awaited when the connection ends.
+
+        The callback fires whenever the connection is gone, by any means:
+        either via an explicit :meth:`close()` call, or via a remote drop
+        (TV standby, idle timeout, network blip) detected in the message
+        loop. Either way the callback is awaited exactly once and then
+        forgotten — consumers can use this to detect silent connection
+        loss and trigger reconnect logic.
 
         Controls that hold their own auxiliary resources (the obvious case
         is :class:`InputControl`, which holds a separate pointer-socket
-        WebSocket) call this after acquiring the resource. ``close()``
-        then awaits every registered callback before tearing down the
-        main socket, so consumers using :class:`WebOSClient` directly
-        (without the :class:`WebOSTV` high-level wrapper) don't leak
-        the auxiliary resource.
+        WebSocket) call this after acquiring the resource, so the resource
+        is torn down regardless of how the main socket dies.
 
         Duplicate registrations are silently ignored, so it's safe for a
         control to call this from a lazy-connect path that may run more
@@ -214,18 +218,28 @@ class WebOSClient:
         if callback not in self._close_callbacks:
             self._close_callbacks.append(callback)
 
+    async def _fire_close_callbacks(self, reason: str) -> None:
+        """Await every registered close callback exactly once, then clear.
+
+        Called from both the explicit :meth:`close()` path and the
+        remote-close branch of :meth:`_handle_messages`. Clearing the list
+        guarantees callbacks fire only once even if ``close()`` is later
+        invoked on an already-remote-closed client.
+        """
+        for cb in list(self._close_callbacks):
+            try:
+                await cb()
+            except Exception as ex:
+                logger.exception("Close callback failed (%s): %s", reason, ex)
+        self._close_callbacks.clear()
+
     async def close(self) -> None:
         """Close the connection."""
         # Run registered close callbacks first so dependent resources
         # (e.g. InputControl's pointer socket) are torn down while the
         # main socket is still alive — some teardown paths may need to
         # send a final command.
-        for cb in list(self._close_callbacks):
-            try:
-                await cb()
-            except Exception as ex:
-                logger.exception("Close callback failed: %s", ex)
-        self._close_callbacks.clear()
+        await self._fire_close_callbacks("explicit close")
 
         if self.connection:
             await self.connection.close()
@@ -265,6 +279,11 @@ class WebOSClient:
                     logger.exception("Error processing message: %s", ex)
         except websockets.exceptions.ConnectionClosed:
             logger.info("WebSocket connection closed")
+            # The remote side dropped the socket (standby, idle timeout,
+            # network blip). Fire close callbacks so consumers learn the
+            # connection is gone — without this they'd believe they were
+            # still connected until the next failed operation.
+            await self._fire_close_callbacks("remote close")
         except Exception as ex:
             logger.exception("WebSocket error: %s", ex)
 

@@ -190,6 +190,36 @@ class TestWebOSClient:
         assert client._close_callbacks == []
 
     @pytest.mark.asyncio
+    async def test_close_callbacks_fire_on_remote_close(self):
+        """v0.3.5: when the remote side drops the socket, the message loop
+        catches ConnectionClosed and must fire close callbacks so consumers
+        learn the connection is gone — not just on explicit close()."""
+        from websockets.exceptions import ConnectionClosed
+
+        client = WebOSClient("192.168.1.100")
+
+        # A connection whose async iteration dies mid-stream the way a
+        # remote drop (standby / idle timeout / network blip) does.
+        class _RemoteDrop:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise ConnectionClosed(None, None)
+
+        client.connection = _RemoteDrop()
+
+        teardown = AsyncMock()
+        client.register_close_callback(teardown)
+
+        await client._handle_messages()
+
+        teardown.assert_awaited_once()
+        # Cleared so a later close() on the already-dead client can't
+        # double-fire the same callback.
+        assert client._close_callbacks == []
+
+    @pytest.mark.asyncio
     async def test_concurrent_connect_second_caller_bails(self, mock_websocket):
         """Pins the current contract of the _connecting guard: a second
         connect() that races a first one returns immediately without dialing
